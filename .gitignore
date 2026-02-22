@@ -1,0 +1,5 @@
+sqlm
+go.sum
+.vscode
+*.db
+*.db-journal
