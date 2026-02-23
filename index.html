@@ -141,7 +141,30 @@ class XSqlm extends HTMLElement {
 		this.updateChats();
 		this.bindEvents();
 		this.updateTitle();
-		//this.updateMessages();
+		await this.updateMessages();
+	}
+
+	async updateMessages() {
+		if (!this.#selected) {
+			this.#messages.innerHTML = `<div class="empty-state">Select or create a chat.</div>`;
+			return;
+		}
+		const res = await fetch(`/chat?id=${encodeURIComponent(this.#selected)}`);
+		if (!res.ok) {
+			this.#messages.innerHTML = `<div class="empty-state">Failed to load messages.</div>`;
+			return;
+		}
+		const payload = await res.json();
+		const msgs = Array.isArray(payload) ? payload : (payload.msgs ?? []);
+		if (msgs.length === 0) {
+			this.#messages.innerHTML = `<div class="empty-state">No messages in this chat yet.</div>`;
+			return;
+		}
+		this.#messages.innerHTML = msgs.map((msg) => `
+			<article class="msg">
+				<div class="msg-body">${escapeHTML(msg.text)}</div>
+			</article>
+		`).join("");
 	}
 
 	async updateChats() {
@@ -223,10 +246,10 @@ class XSqlm extends HTMLElement {
 		this.querySelectorAll("#chats li").forEach(li => {
 			//todo: avoid string-int conversion
 			const id = parseInt(li.dataset.id, 10);
-        	li.onclick = () => {
+			li.onclick = async () => {
 				//this.saveChat();
 				this.#selected = id;
-				this.render();
+				await this.render();
 			};
 			li.querySelector(".delete").onclick = async (e) => {
 				e.stopPropagation();
@@ -302,7 +325,7 @@ class XSqlm extends HTMLElement {
 		}
 		const chats = await res.json();
 		this.#chats = chats;
-		this.#selected = null;
+		this.#selected = chats.length > 0 ? chats[0].id : null;
 		await this.render();
 	}
 
@@ -323,7 +346,7 @@ class XSqlm extends HTMLElement {
 		}
 		const chats = await res.json();
 		this.#chats = chats;
-		this.render();
+		await this.render();
 	}
 }
 
