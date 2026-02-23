@@ -200,7 +200,7 @@ func (S *Sqlm) loadChats() ([]*Chat, error) {
 	}
 	defer rows.Close()
 
-	var chats []*Chat
+	chats := make([]*Chat, 0)
 	for rows.Next() {
 		chat := &Chat{}
 		err := rows.Scan(&chat.Id, &chat.Title, &chat.Created, &chat.Updated)
@@ -256,14 +256,14 @@ func httpServer() {
 	http.HandleFunc("/create", httpCreateChat)
 	http.HandleFunc("/delete", httpDeleteChat)
 	http.HandleFunc("/rename", httpRenameChat)
-	http.HandleFunc("/page", httpChat)
+	http.HandleFunc("/chat", httpChat)
 	log.Fatal(http.ListenAndServe(CONF.port, nil))
 }
 
 func httpIndex(w http.ResponseWriter, r *http.Request) {
 	data, err := embedded.ReadFile("index.html")
 	if err != nil {
-		http.Error(w, "Error loading the page", http.StatusInternalServerError)
+		http.Error(w, "Error loading chats", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html")
@@ -341,14 +341,8 @@ func httpChats(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to load chats", http.StatusInternalServerError)
 		return
 	}
-	payload, err := json.Marshal(chats)
-	if err != nil {
-		errorLog.Printf("loadChats marshal error: %v", err)
-		http.Error(w, "Failed to load chats", http.StatusInternalServerError)
-		return
-	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(payload)
+	json.NewEncoder(w).Encode(chats)
 }
 
 func httpChat(w http.ResponseWriter, r *http.Request) {
@@ -447,11 +441,8 @@ func httpDeleteChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to load chats", http.StatusInternalServerError)
 		return
 	}
-	resp := struct {
-		Chats []*Chat `json:"chats"`
-	}{Chats: chats}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(chats)
 }
 
 func httpRenameChat(w http.ResponseWriter, r *http.Request) {
@@ -483,9 +474,6 @@ func httpRenameChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to load chats", http.StatusInternalServerError)
 		return
 	}
-	resp := struct {
-		Chats []*Chat `json:"chats"`
-	}{Chats: chats}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(chats)
 }

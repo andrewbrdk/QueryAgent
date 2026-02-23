@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>SQLM</title>
+	<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<x-main></x-main>
+
+<script>
+class XMain extends HTMLElement {
+	#login = null;
+	#sqlm = null;
+
+	constructor() {
+		super();
+		this.innerHTML = `
+			<x-login></x-login>
+			<x-sqlm></x-sqlm>
+		`;
+		this.#sqlm = this.querySelector('x-sqlm');
+		this.#login = this.querySelector('x-login');
+		this.#login.hidden = true;
+		this.#sqlm.hidden = true;
+		this.addEventListener('loginsuccess', (e) => {
+			this.renderPage();
+		});
+		this.renderPage();
+	}
+
+	async renderPage() {
+		let res = await fetch('/chats');
+		const statusCode = res.status;
+		if (statusCode == 200) {
+			this.#sqlm.hidden = false;
+			this.#login.hidden = true;
+			let p = await res.json();
+			this.#sqlm.init(p);
+		} else if (statusCode == 401) { // unauthorized
+			this.#login.hidden = false;
+			this.#sqlm.hidden = true;
+		} else {
+			this.#sqlm.hidden = true;
+		}
+	}
+}
+
+class XLogin extends HTMLElement {
+	constructor() {
+		super();
+		this.innerHTML = `
+			<h1>Scrawl</h1>
+			<form>
+				<label for="password">Password:</label>
+				<input type="password" id="password" name="password" required>
+				<button type="button">Login</button>
+				<br/>
+				<div id="invalidpassword" style="display: none;">Invalid Password</div>
+			</form>
+		`;
+		this.querySelector('form').onsubmit = (e) => {
+			e.preventDefault();
+			this.submitLogin();
+		};
+		this.querySelector('button').onclick = (e) => {
+			e.preventDefault();
+			this.submitLogin();
+		};
+	}
+
+	async submitLogin() {
+		const password = this.querySelector('#password').value;
+		const response = await fetch('/login', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			credentials: 'include',
+			body: JSON.stringify({ password }),
+		});
+		if (response.ok) {
+			this.querySelector('#invalidpassword').style.display = "none";
+			this.dispatchEvent(new CustomEvent('loginsuccess', { bubbles: true }));
+		} else {
+			this.querySelector('#invalidpassword').style.display = "inline";
+			setTimeout(() => {this.querySelector('#invalidpassword').style.display = "none";}, 3000);
+		}
+	}
+}
+
+class XSqlm extends HTMLElement {
+	#aside = null;
+	#chats = null;
+	#ulchats = null;
+	#chattitle = null;
+	#messages = null;
+	#selected = null;
+	#resizer = null;
+	#isResizing = false;
+	#resizingStartX = 0;
+	#resizingStartWidth = 0;
+	#sidebarDefaultWidth = "15%";
+	#sidebarMinWidth = 120; //todo: css 
+	#collapseEdgeThreshold = 30;
+
+	constructor() {
+		super();
+		this.innerHTML = `
+			<aside>
+				<div id="sidebar-header">
+					<span id="sidebar-label">Chats</span>
+				</div>
+				<ul id="chats"></ul>
+				<button id="newchat">＋</button>
+			</aside>
+			<div id="sidebar-control">
+				<div class="resizer"></div>
+			</div>
+			<div id="content">
+				<div class="content-header">
+					<input id="chattitle" type="text">
+				</div>
+				<div id="messages"></div>
+			</div>`;
+		this.#aside = this.querySelector('aside');
+		this.#ulchats = this.querySelector('#chats');
+		this.#chattitle = this.querySelector('#chattitle');
+		this.#messages = this.querySelector('#messages');
+		this.#resizer = this.querySelector(".resizer");
+	}
+
+	async init(chats) {
+		this.#chats = chats;
+		//todo: select last opened chat
+		this.#selected = this.#chats.length > 0 ? this.#chats[0].id : null;
+		await this.render();
+	}
+
+	async render() {
+		this.updateChats();
+		this.bindEvents();
+		this.updateTitle();
+		//this.updateMessages();
+	}
+
+	async updateChats() {
+		if (!this.#chats) return;
+		this.#ulchats.innerHTML = "";
+		this.#chats.forEach(chat => {
+			const li = document.createElement("li");
+			li.dataset.id = chat.id;
+			const isSelected = (chat.id === this.#selected ? "selected" : "");
+			li.innerHTML = `
+				<div class="chat-row ${isSelected}">
+					<div class="left">	
+						<span class="title">${escapeHTML(chat.title)}</span>
+					</div>
+					<div class="right">
+						<button class="delete">✕</button>
+					</div>
+				</div>
+			`;
+			this.#ulchats.appendChild(li);
+		});
+	}
+
+	collapseSidebar() {
+		this.#aside.classList.add("hidden");
+		this.#aside.style.width = "0px";
+		this.#resizer.classList.add("sidebar-collapsed");
+	}
+
+	expandSidebar() {
+		this.#aside.classList.remove("hidden");
+		this.#aside.style.width = this.#sidebarDefaultWidth;
+		this.#resizer.classList.remove("sidebar-collapsed");
+	}
+
+	bindEvents() {
+		this.unbindEvents();
+		
+		this.#resizer.onmousedown = (e) => {
+			if (this.#aside.classList.contains("hidden")) {
+				this.expandSidebar();
+				return;
+			}
+			this.#isResizing = true;
+			this.#resizingStartX = e.clientX;
+			this.#resizingStartWidth = parseInt(window.getComputedStyle(this.#aside).width, 10);
+			document.body.style.userSelect = "none";
+		};
+		this.onmousemove = (e) => {
+			if (!this.#isResizing) return;
+			const delta = e.clientX - this.#resizingStartX;
+			const newWidth = this.#resizingStartWidth + delta;
+			const nearLeftEdge = e.clientX <= this.#collapseEdgeThreshold;
+			if (newWidth <= this.#sidebarMinWidth && nearLeftEdge) {
+				this.collapseSidebar();
+				this.#isResizing = false;
+				document.body.style.userSelect = "";
+				return;
+			}
+			if (newWidth > this.#sidebarMinWidth) {
+				this.#aside.style.width = newWidth + "px";
+			} else {
+				this.#aside.style.width = this.#sidebarMinWidth + "px";
+			}
+		};
+		this.onmouseup = () => {
+			if (this.#isResizing) {
+				this.#isResizing = false;
+				this.#resizingStartX = 0;
+				this.#resizingStartWidth = 0;
+				document.body.style.userSelect = "";
+			}
+		};
+
+		this.querySelector("#newchat").onclick = () => {
+			this.createChat("New Chat", null);
+		};
+
+		this.querySelectorAll("#chats li").forEach(li => {
+			//todo: avoid string-int conversion
+			const id = parseInt(li.dataset.id, 10);
+        	li.onclick = () => {
+				//this.saveChat();
+				this.#selected = id;
+				this.render();
+			};
+			li.querySelector(".delete").onclick = async (e) => {
+				e.stopPropagation();
+				await this.deleteChat(id);
+			};
+		});
+	
+		let renameTimer = null;
+		this.#chattitle.oninput = () => {
+			clearTimeout(renameTimer);
+			renameTimer = setTimeout(() => {this.saveTitleChange();}, 400);
+		};
+	}
+
+	unbindEvents() {
+		this.onclick = null;
+		this.querySelectorAll('button').forEach(btn => btn.onclick = null);
+		this.querySelectorAll("aside li").forEach(li => li.onclick = null);
+	}
+
+	updateTitle() {
+		this.#chattitle.value = this.getChatTitleById(this.#selected) ?? "";
+	}
+
+	getChatTitleById(id, chats=null) {
+		if (!id) return null;
+		if (chats === null) chats = this.#chats;
+		for (const chat of chats) {
+			if (chat.id === id) return chat.title;
+		}
+		return null;
+	}
+
+	// async savePage() {
+	// 	if (!this.#selected) return;
+	// 	const delta = this.#quill.getContents();
+	// 	const res = await fetch('/save', {
+	// 		method: 'POST',
+	// 		headers: { 'Content-Type': 'application/json' },
+	// 		body: JSON.stringify({id: this.#selected, delta: delta})
+	// 	});
+	// 	if (!res.ok) {
+	// 		console.error("Failed to auto-save page:", this.#selected);
+	// 	}
+	// }
+
+	async createChat(title, parentId) {
+		const res = await fetch('/create', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ title: title })
+		});
+		if (!res.ok) {
+			console.error("Failed to create a chat");
+			return;
+		}
+		const data = await res.json();
+		this.#chats = data.chats;
+		this.#selected = data.new_chat_id;
+		await this.render();
+	}
+
+	async deleteChat(id) {
+		if (!confirm(`Delete chat "${this.getChatTitleById(id)}"?`)) return;
+		const res = await fetch('/delete', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ id }),
+		});
+		if (!res.ok) {
+			console.error("Failed to delete the chat");
+			return;
+		}
+		const chats = await res.json();
+		this.#chats = chats;
+		this.#selected = null;
+		await this.render();
+	}
+
+	async saveTitleChange() {
+		const newTitle = this.#chattitle.value.trim();
+		const oldTitle = this.getChatTitleById(this.#selected);
+		if (!newTitle || newTitle === oldTitle) return;
+
+		const res = await fetch('/rename', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ id: this.#selected, title: newTitle })
+		});
+		if (!res.ok) {
+			console.error("Rename failed");
+			this.#chattitle.value = oldTitle;
+			return;
+		}
+		const chats = await res.json();
+		this.#chats = chats;
+		this.render();
+	}
+}
+
+function escapeHTML(str) {
+	const div = document.createElement('div');
+	div.textContent = str;
+	return div.innerHTML;
+}
+
+customElements.define('x-main', XMain);
+customElements.define('x-login', XLogin);
+customElements.define('x-sqlm', XSqlm);
+
+</script>
+</body>
+</html>
