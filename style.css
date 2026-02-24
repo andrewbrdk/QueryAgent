@@ -289,7 +289,7 @@ x-sqlm {
 				justify-content: flex-start;
 			}
 			.msg p {
-				max-width: min(80%, 800px);
+				max-width: 80%;
 				margin: 0;
 				padding: 10px 12px;
 				border-radius: 10px;
@@ -303,6 +303,25 @@ x-sqlm {
 				background: #f4f4f4;
 				min-width: 65%;
 				margin-left: auto;
+			}
+			.structured {
+				max-width: 80%;
+				display: flex;
+				flex-direction: column;
+			}
+			.outline p {
+				font-style: normal;
+			}
+			.sql pre {
+				margin: 0;
+				padding: 10px 12px;
+				white-space: pre-wrap;
+				overflow-wrap: anywhere;
+				overflow: auto; 
+			}
+			.sql code {
+				font-family: ui-monospace, monospace;
+				font-size: 0.92rem;
 			}
 		}
 		#composer {

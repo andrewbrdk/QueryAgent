@@ -178,15 +178,44 @@ class XSqlm extends HTMLElement {
 			this.#messages.innerHTML = `<div class="empty-state">No messages in this chat yet.</div>`;
 			return;
 		}
-		this.#messages.innerHTML = msgs.map((msg) => {
-			const roleClass = msg.type === 1 ? "msg-assistant" : "msg-user";
+		this.#messages.innerHTML = msgs.map(this.renderMessageBody).join("");
+		this.#messages.scrollTop = this.#messages.scrollHeight;
+	}
+
+	renderMessageBody(msg) {
+		const roleClass = msg.type === 1 ? "msg-assistant" : "msg-user";
+		if (msg.type !== 1) {
 			return `
 				<article class="msg ${roleClass}">
-					<p>${escapeHTML(msg.text)}</p>
+					<p>${escapeHTML(msg.text ?? "")}</p>
 				</article>
 			`;
-		}).join("");
-		this.#messages.scrollTop = this.#messages.scrollHeight;
+		}
+		const outline = (msg.outline ?? "").trim();
+		const sql = (msg.sql ?? "").trim();
+		if (!outline && !sql) {
+			return `
+				<article class="msg ${roleClass}">
+					<p>${escapeHTML(msg.text ?? "")}</p>
+				</article>
+			`;
+		}
+		return `
+			<article class="msg ${roleClass}">
+				<div class="structured">
+					${outline ? `
+						<section class="outline">
+							<p>${escapeHTML(outline)}</p>
+						</section>
+					` : ""}
+					${sql ? `
+						<section class="sql">
+							<pre><code>${escapeHTML(sql)}</code></pre>
+						</section>
+					` : ""}
+				</div>
+			</article>
+		`;
 	}
 
 	async updateChats() {

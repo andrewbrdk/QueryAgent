@@ -705,6 +705,7 @@ func httpUserMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	outline := strings.TrimSpace(parsed.Outline)
 	sql := strings.TrimSpace(parsed.SQL)
+	//todo: format and validate SQL
 	err = SQLM.CreateMessage(req.ChatID, 1, assistantText, outline, sql)
 	if err != nil {
 		errorLog.Printf("Failed to save assistant message: %v", err)
