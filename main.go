@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"embed"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -31,12 +34,14 @@ var CONF Config
 var SQLM Sqlm
 
 type Sqlm struct {
-	db *sql.DB
+	db       *sql.DB
+	execConn *pgx.Conn
 }
 
 type Config struct {
 	port            string
 	dbFile          string
+	execDB          string
 	password        string
 	openRouterKey   string
 	openRouterModel string
@@ -102,14 +107,13 @@ type openRouterResponse struct {
 }
 
 func main() {
-	initConfig()
-	jwtSecretKey = generateRandomKey(32)
 	infoLog = log.New(os.Stdout, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
 	errorLog = log.New(os.Stdout, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+	initConfig()
+	jwtSecretKey = generateRandomKey(32)
 	SQLM.initDB()
-	if _, err := SQLM.loadChats(); err != nil {
-		errorLog.Printf("Failed to load chats: %v", err)
-	}
+	SQLM.initExecConn()
+	defer SQLM.execConn.Close(context.Background())
 	httpServer()
 }
 
@@ -122,6 +126,10 @@ func initConfig() {
 	}
 	if dbFile := os.Getenv("SQLM_DBFILE"); dbFile != "" {
 		CONF.dbFile = dbFile
+	}
+	CONF.execDB = os.Getenv("SQLM_EXEC_DB")
+	if CONF.execDB == "" {
+		errorLog.Printf("SQLM_EXEC_DB is not set. SQL execution is not available.")
 	}
 	CONF.password = os.Getenv("SQLM_PASSWORD")
 	CONF.openRouterKey = strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
@@ -180,6 +188,24 @@ func (S *Sqlm) initDB() {
 	if firstRun {
 		infoLog.Println("Database created")
 	}
+}
+
+func (S *Sqlm) initExecConn() {
+	if strings.TrimSpace(CONF.execDB) == "" {
+		infoLog.Printf("No execution database configured.")
+		return
+	}
+	//todo: set timeout from config
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, CONF.execDB)
+	if err != nil {
+		log.Fatalf("cannot open execution db connection: %v", err)
+	}
+	if err := conn.Ping(ctx); err != nil {
+		log.Fatalf("cannot ping execution db connection: %v", err)
+	}
+	S.execConn = conn
 }
 
 func generateRandomKey(size int) []byte {
@@ -307,6 +333,33 @@ func (S *Sqlm) loadMessages(chatId int) []*Msg {
 	return msgs
 }
 
+func (S *Sqlm) loadMessageByID(chatID int, messageID int) (*Msg, error) {
+	row := S.db.QueryRow(`
+		SELECT
+			id,
+			chat_id,
+			position,
+			type,
+			text,
+			outline,
+			sql,
+			created
+		FROM messages
+		WHERE id = ? AND chat_id = ?
+	`, messageID, chatID)
+	msg := &Msg{}
+	err := row.Scan(
+		&msg.Id, &msg.ChatId, &msg.Position,
+		&msg.Type, &msg.Text, &msg.Outline,
+		&msg.SQL, &msg.Created,
+	)
+	if err != nil {
+		errorLog.Printf("loadMessageByID error: %v", err)
+		return nil, err
+	}
+	return msg, nil
+}
+
 func (S *Sqlm) CreateMessage(chatID int, msgType int, text string, outline string, sql string) error {
 	tx, err := S.db.Begin()
 	if err != nil {
@@ -317,7 +370,6 @@ func (S *Sqlm) CreateMessage(chatID int, msgType int, text string, outline strin
 			tx.Rollback()
 		}
 	}()
-
 	var chatExists int
 	err = tx.QueryRow(`
 		SELECT EXISTS(SELECT 1 FROM chats WHERE id = ?)
@@ -350,14 +402,8 @@ func (S *Sqlm) CreateMessage(chatID int, msgType int, text string, outline strin
 	if err != nil {
 		return err
 	}
-
 	err = tx.Commit()
 	return err
-}
-
-type Response struct {
-	Status  string `json:"status"`
-	Message string `json:"message,omitempty"`
 }
 
 func buildLLMMessages(chatID int) []LLMMessage {
@@ -425,6 +471,62 @@ func callOpenRouter(messages []LLMMessage) (string, error) {
 	return strings.TrimSpace(orResp.Choices[0].Message.Content), nil
 }
 
+func (S *Sqlm) ExecuteSQL(query string) ([]map[string]any, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("empty query")
+	}
+	if S.execConn == nil {
+		return nil, errors.New("execution db not initialized")
+	}
+	//todo: set timeout from config
+	//todo: pass user context for cancellation
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tx, err := S.execConn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	fds := rows.FieldDescriptions()
+	//todo: deal with large results.
+	const maxRows = 50
+	results := make([]map[string]any, 0, 50)
+	for rows.Next() {
+		if len(results) >= maxRows {
+			break
+		}
+		values, err := rows.Values()
+		if err != nil {
+			return nil, err
+		}
+		row := make(map[string]any, len(values))
+		for i, fd := range fds {
+			v := values[i]
+			if b, ok := v.([]byte); ok {
+				row[string(fd.Name)] = string(b)
+			} else {
+				row[string(fd.Name)] = v
+			}
+		}
+		results = append(results, row)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
 func httpServer() {
 	http.HandleFunc("/", httpIndex)
 	http.Handle("/style.css", http.FileServer(http.FS(embedded)))
@@ -435,6 +537,7 @@ func httpServer() {
 	http.HandleFunc("/rename", httpRenameChat)
 	http.HandleFunc("/chat", httpChat)
 	http.HandleFunc("/message", httpUserMessage)
+	http.HandleFunc("/execute", httpExecute)
 	log.Fatal(http.ListenAndServe(CONF.port, nil))
 }
 
@@ -714,4 +817,55 @@ func httpUserMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+}
+
+func httpExecute(w http.ResponseWriter, r *http.Request) {
+	err, code, msg := httpCheckAuth(w, r)
+	if err != nil {
+		http.Error(w, msg, code)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		ChatID    int `json:"chat_id"`
+		MessageID int `json:"message_id"`
+	}
+	err = json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.ChatID <= 0 || req.MessageID <= 0 {
+		http.Error(w, "Missing or invalid chat_id/message_id", http.StatusBadRequest)
+		return
+	}
+	m, err := SQLM.loadMessageByID(req.ChatID, req.MessageID)
+	if err != nil {
+		http.Error(w, "Message not found", http.StatusNotFound)
+		return
+	}
+	if m.Type != 1 {
+		http.Error(w, "Only assistant messages can be executed", http.StatusBadRequest)
+		return
+	}
+	query := strings.TrimSpace(m.SQL)
+	if query == "" {
+		http.Error(w, "No SQL found on this message", http.StatusBadRequest)
+		return
+	}
+	//todo: create context
+	rows, err := SQLM.ExecuteSQL(query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(
+		struct {
+			Rows []map[string]any `json:"rows"`
+		}{Rows: rows},
+	)
 }
