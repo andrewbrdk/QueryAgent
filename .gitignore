@@ -1,5 +1,5 @@
 gosqlm
 go.sum
 .vscode
+*.log
 *.db
-*.db-journal

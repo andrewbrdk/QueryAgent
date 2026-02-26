@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +42,7 @@ type Config struct {
 	openRouterKey   string
 	openRouterModel string
 	execDB          string
+	logFile         string
 }
 
 type LLMMessage struct {
@@ -83,6 +85,14 @@ type openRouterResponse struct {
 	} `json:"choices"`
 }
 
+type LLMLogEntry struct {
+	ID        string    `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	UserText  string    `json:"user_text"`
+	Outline   string    `json:"outline"`
+	SQL       string    `json:"sql"`
+}
+
 func main() {
 	infoLog = log.New(os.Stdout, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
 	errorLog = log.New(os.Stdout, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
@@ -108,6 +118,10 @@ func initConfig() {
 	CONF.execDB = os.Getenv("SQLM_EXEC_DB")
 	if CONF.execDB == "" {
 		errorLog.Printf("SQLM_EXEC_DB is not set. SQL execution is not available.")
+	}
+	CONF.logFile = strings.TrimSpace(os.Getenv("SQLM_LOG_FILE"))
+	if CONF.logFile == "" {
+		errorLog.Printf("SQLM_LOG_FILE is not set. Logging is disabled.")
 	}
 }
 
@@ -299,6 +313,39 @@ func callOpenRouter(messages []LLMMessage) (string, error) {
 // 	return results, nil
 // }
 
+func logLLM(entry LLMLogEntry) error {
+	if strings.TrimSpace(CONF.logFile) == "" {
+		return errors.New("log file not configured")
+	}
+	f, err := os.OpenFile(CONF.logFile,
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		errorLog.Printf("unable to open log file %s: %v", CONF.logFile, err)
+		return err
+	}
+	defer f.Close()
+	b, err := json.Marshal(entry)
+	if err != nil {
+		errorLog.Printf("failed to marshal LLM log entry: %v", err)
+		return err
+	}
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		errorLog.Printf("failed to write LLM log entry: %v", err)
+		return err
+	}
+	return nil
+}
+
+func generateUniqueID() string {
+	b := make([]byte, 8)
+	_, err := rand.Read(b)
+	if err != nil {
+		errorLog.Printf("Failed to generate unique ID: %v", err)
+		return ""
+	}
+	return hex.EncodeToString(b)
+}
+
 func httpServer() {
 	http.HandleFunc("/", httpIndex)
 	http.Handle("/style.css", http.FileServer(http.FS(embedded)))
@@ -433,12 +480,14 @@ func httpUserMessage(w http.ResponseWriter, r *http.Request) {
 	outline := strings.TrimSpace(parsed.Outline)
 	sql := strings.TrimSpace(parsed.SQL)
 	//todo: format and validate SQL
-	// err = SQLM.CreateMessage(req.ChatID, 1, assistantText, outline, sql)
-	// if err != nil {
-	// 	errorLog.Printf("Failed to save assistant message: %v", err)
-	// 	http.Error(w, "Failed to save assistant message", http.StatusInternalServerError)
-	// 	return
-	// }
+	go logLLM(LLMLogEntry{
+		ID:        generateUniqueID(),
+		Timestamp: time.Now(),
+		UserText:  req.Text,
+		Outline:   outline,
+		SQL:       sql,
+	})
+	//todo: error is lost
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"outline": outline,
