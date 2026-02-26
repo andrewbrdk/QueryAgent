@@ -94,6 +94,7 @@ class XSqlm extends HTMLElement {
 	#sendmessage = null;
 	#messageerror = null;
 	#isSendingMessage = false;
+	#execerror = null;
 
 	constructor() {
 		super();
@@ -104,15 +105,22 @@ class XSqlm extends HTMLElement {
 				<textarea id="messageinput" placeholder="Type a message..."></textarea>
 				<button id="sendmessage" type="button">Send</button>
 			</div>
-			<div id="messageerror" hidden></div>
+			<div id="messageerror" class="errmsg" hidden></div>
 			<div id="response">
 				<div class="title">Response:</div>
 				<div id="llmresp"><em>Send a message to get SQL.</em></div>
+				<button id="executesql" type="button">Execute</button>
+			</div>
+			<div id="execerror" class="errmsg" hidden></div>
+			<div id="execresult">
+				<div class="title">Execution Result:</div>
+				<div id="sql-exec-result"></div>
 			</div>`;
 		this.#llmresp = this.querySelector('#llmresp');
 		this.#messageinput = this.querySelector('#messageinput');
 		this.#sendmessage = this.querySelector('#sendmessage');
 		this.#messageerror = this.querySelector('#messageerror');
+		this.#execerror = this.querySelector('#execerror');
 	}
 
 	async init() {
@@ -136,16 +144,9 @@ class XSqlm extends HTMLElement {
 				await this.sendMessage();
 			}
 		};
-
-		// this.querySelectorAll(".execute-sql").forEach(btn => {
-		// 	btn.onclick = async () => {
-		// 		const chatId = Number(btn.dataset.chatId);
-		// 		const messageId = Number(btn.dataset.messageId);
-		// 		const resultEl = btn.closest(".sql")?.querySelector(".sql-exec-result");
-		// 		if (!chatId || !messageId || !resultEl) return;
-		// 		await this.executeSQLForMessage(chatId, messageId, btn, resultEl);
-		// 	};
-		// });
+		this.querySelector("#executesql").onclick = async () => {
+			await this.executeSQLForMessage();
+		};
 	}
 
 	unbindEvents() {
@@ -195,66 +196,71 @@ class XSqlm extends HTMLElement {
 		}
 	}
 
-	// async executeSQLForMessage(chatId, messageId, button, resultEl) {
-	// 	button.disabled = true;
-	// 	const oldLabel = button.textContent;
-	// 	button.textContent = "Executing...";
-	// 	resultEl.classList.remove("error");
-	// 	resultEl.innerHTML = "";
+	async executeSQLForMessage() {
+		const button = this.querySelector("#executesql");
+		button.disabled = true;
+		const oldLabel = button.textContent;
+		button.textContent = "Executing...";
+		this.#execerror.hidden = true;
+		this.#execerror.innerHTML = "";
+		const sql = this.querySelector(".sql-code")?.textContent || "";
+		if (!sql) {
+			this.#execerror.hidden = false;
+			this.#execerror.innerHTML = `<div>"No SQL to execute."</div>`;
+			button.disabled = false;
+			button.textContent = oldLabel;
+			return;
+		}
 
-	// 	try {
-	// 		const res = await fetch("/execute", {
-	// 			method: "POST",
-	// 			headers: { "Content-Type": "application/json" },
-	// 			body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
-	// 		});
-	// 		if (!res.ok) {
-	// 			const txt = await res.text();
-	// 			this.renderExecError(resultEl, txt || "Execution failed.");
-	// 			return;
-	// 		}
-	// 		const payload = await res.json();
-	// 		const rows = Array.isArray(payload.rows) ? payload.rows : [];
-	// 		this.renderExecRows(resultEl, rows);
-	// 	} catch {
-	// 		this.renderExecError(resultEl, "Execution failed.");
-	// 	} finally {
-	// 		this.#messages.scrollTop = this.#messages.scrollHeight;
-	// 		button.disabled = false;
-	// 		button.textContent = oldLabel;
-	// 	}
-	// }
+		try {
+			const res = await fetch("/execute", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ sql: sql }),
+			});
+			if (!res.ok) {
+				const txt = await res.text();
+				this.#execerror.hidden = false;
+				this.#execerror.innerHTML = `<div>${escapeHTML(txt || "Execution failed.")}</div>`;
+				return;
+			}
+			const payload = await res.json();
+			const rows = Array.isArray(payload.rows) ? payload.rows : [];
+			this.renderExecRows(rows);
+		} catch (e) {
+			this.#execerror.hidden = false;
+			this.#execerror.innerHTML = `<div>${escapeHTML("Execution failed.")}</div>`;
+		} finally {
+			button.disabled = false;
+			button.textContent = oldLabel;
+		}
+	}
 
-	// renderExecError(resultEl, message) {
-	// 	resultEl.classList.add("error");
-	// 	resultEl.innerHTML = `<div>${escapeHTML(message)}</div>`;
-	// }
-
-	// renderExecRows(resultEl, rows) {
-	// 	resultEl.classList.remove("error");
-	// 	if (rows.length === 0) {
-	// 		resultEl.innerHTML = `<div class="sql-empty">No rows returned.</div>`;
-	// 		return;
-	// 	}
-	// 	const cols = Object.keys(rows[0] ?? {});
-	// 	const head = cols.map((c) => `<th>${escapeHTML(c)}</th>`).join("");
-	// 	const body = rows.map((r) => {
-	// 		const tds = cols.map((c) => {
-	// 			const v = r[c];
-	// 			const s = v == null ? "NULL" : (typeof v === "object" ? JSON.stringify(v) : String(v));
-	// 			return `<td>${escapeHTML(s)}</td>`;
-	// 		}).join("");
-	// 		return `<tr>${tds}</tr>`;
-	// 	}).join("");
-	// 	resultEl.innerHTML = `
-	// 		<div class="sql-result-table-wrap">
-	// 			<table class="sql-result-table">
-	// 				<thead><tr>${head}</tr></thead>
-	// 				<tbody>${body}</tbody>
-	// 			</table>
-	// 		</div>
-	// 	`;
-	// }
+	renderExecRows(rows) {
+		const resultEl = this.querySelector("#sql-exec-result");
+		if (rows.length === 0) {
+			resultEl.innerHTML = `<div class="sql-empty">No rows returned.</div>`;
+			return;
+		}
+		const cols = Object.keys(rows[0] ?? {});
+		const head = cols.map((c) => `<th>${escapeHTML(c)}</th>`).join("");
+		const body = rows.map((r) => {
+			const tds = cols.map((c) => {
+				const v = r[c];
+				const s = v == null ? "NULL" : (typeof v === "object" ? JSON.stringify(v) : String(v));
+				return `<td>${escapeHTML(s)}</td>`;
+			}).join("");
+			return `<tr>${tds}</tr>`;
+		}).join("");
+		resultEl.innerHTML = `
+			<div class="sql-result-table-wrap">
+				<table class="sql-result-table">
+					<thead><tr>${head}</tr></thead>
+					<tbody>${body}</tbody>
+				</table>
+			</div>
+		`;
+	}
 }
 
 function escapeHTML(str) {

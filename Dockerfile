@@ -1,7 +1,8 @@
 FROM golang:1.26
 
+RUN mkdir -p /app/context
+RUN mkdir -p /app/logs
 COPY main.go go.mod index.html style.css /app/
-
 WORKDIR /app
 RUN go get gosqlm
 RUN go build

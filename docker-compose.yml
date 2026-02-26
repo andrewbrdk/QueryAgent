@@ -10,6 +10,8 @@ services:
       - "8080:8080"
     volumes:
       #- ./sqlm.toml:/app/sqlm.toml
+      - ./context_examples:/app/context:ro
+      - ./logs:/app/logs
       - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     depends_on:
@@ -19,6 +21,8 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL}
       SQLM_EXEC_DB: postgres://pguser:password123@postgres:5432/sqlm?sslmode=disable
+      SQLM_CONTEXT_DIR: /app/context
+      SQLM_LOG_FILE: /app/logs/gosqlm.log
       #SQLM_CONF: /app/sqlm.toml
       #SQLM_PORT: 8080
       #SQLM_PASSWORD: "qwerty"

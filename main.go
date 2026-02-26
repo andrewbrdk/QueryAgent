@@ -251,61 +251,61 @@ func callOpenRouter(messages []LLMMessage) (string, error) {
 	return strings.TrimSpace(orResp.Choices[0].Message.Content), nil
 }
 
-// func (S *Sqlm) ExecuteSQL(query string) ([]map[string]any, error) {
-// 	query = strings.TrimSpace(query)
-// 	if query == "" {
-// 		return nil, errors.New("empty query")
-// 	}
-// 	if S.execConn == nil {
-// 		return nil, errors.New("execution db not initialized")
-// 	}
-// 	//todo: set timeout from config
-// 	//todo: pass user context for cancellation
-// 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-// 	defer cancel()
-// 	tx, err := S.execConn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	defer tx.Rollback(ctx)
-// 	rows, err := tx.Query(ctx, query)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	defer rows.Close()
+func (S *Sqlm) ExecuteSQL(query string) ([]map[string]any, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("empty query")
+	}
+	if S.execConn == nil {
+		return nil, errors.New("execution db not initialized")
+	}
+	//todo: set timeout from config
+	//todo: pass user context for cancellation
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	tx, err := S.execConn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 
-// 	fds := rows.FieldDescriptions()
-// 	//todo: deal with large results.
-// 	const maxRows = 50
-// 	results := make([]map[string]any, 0, 50)
-// 	for rows.Next() {
-// 		if len(results) >= maxRows {
-// 			break
-// 		}
-// 		values, err := rows.Values()
-// 		if err != nil {
-// 			return nil, err
-// 		}
-// 		row := make(map[string]any, len(values))
-// 		for i, fd := range fds {
-// 			v := values[i]
-// 			if b, ok := v.([]byte); ok {
-// 				row[string(fd.Name)] = string(b)
-// 			} else {
-// 				row[string(fd.Name)] = v
-// 			}
-// 		}
-// 		results = append(results, row)
-// 	}
+	fds := rows.FieldDescriptions()
+	//todo: deal with large results.
+	const maxRows = 30
+	results := make([]map[string]any, 0, maxRows)
+	for rows.Next() {
+		if len(results) >= maxRows {
+			break
+		}
+		values, err := rows.Values()
+		if err != nil {
+			return nil, err
+		}
+		row := make(map[string]any, len(values))
+		for i, fd := range fds {
+			v := values[i]
+			if b, ok := v.([]byte); ok {
+				row[string(fd.Name)] = string(b)
+			} else {
+				row[string(fd.Name)] = v
+			}
+		}
+		results = append(results, row)
+	}
 
-// 	if err := rows.Err(); err != nil {
-// 		return nil, err
-// 	}
-// 	if err := tx.Commit(ctx); err != nil {
-// 		return nil, err
-// 	}
-// 	return results, nil
-// }
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
 
 func logLLM(entry LLMLogEntry) error {
 	if strings.TrimSpace(CONF.logFile) == "" {
@@ -346,7 +346,7 @@ func httpServer() {
 	http.HandleFunc("/login", httpLogin)
 	http.HandleFunc("/checkauth", httpCheckAuthHandler)
 	http.HandleFunc("/message", httpUserMessage)
-	//http.HandleFunc("/execute", httpExecute)
+	http.HandleFunc("/execute", httpExecute)
 	log.Fatal(http.ListenAndServe(CONF.port, nil))
 }
 
@@ -485,53 +485,40 @@ func httpUserMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// func httpExecute(w http.ResponseWriter, r *http.Request) {
-// 	err, code, msg := httpCheckAuth(w, r)
-// 	if err != nil {
-// 		http.Error(w, msg, code)
-// 		return
-// 	}
-// 	if r.Method != http.MethodPost {
-// 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-// 		return
-// 	}
-// 	var req struct {
-// 		ChatID    int `json:"chat_id"`
-// 		MessageID int `json:"message_id"`
-// 	}
-// 	err = json.NewDecoder(r.Body).Decode(&req)
-// 	if err != nil {
-// 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-// 		return
-// 	}
-// 	if req.ChatID <= 0 || req.MessageID <= 0 {
-// 		http.Error(w, "Missing or invalid chat_id/message_id", http.StatusBadRequest)
-// 		return
-// 	}
-// 	m, err := SQLM.loadMessageByID(req.ChatID, req.MessageID)
-// 	if err != nil {
-// 		http.Error(w, "Message not found", http.StatusNotFound)
-// 		return
-// 	}
-// 	if m.Type != 1 {
-// 		http.Error(w, "Only assistant messages can be executed", http.StatusBadRequest)
-// 		return
-// 	}
-// 	query := strings.TrimSpace(m.SQL)
-// 	if query == "" {
-// 		http.Error(w, "No SQL found on this message", http.StatusBadRequest)
-// 		return
-// 	}
-// 	//todo: create context
-// 	rows, err := SQLM.ExecuteSQL(query)
-// 	if err != nil {
-// 		http.Error(w, err.Error(), http.StatusBadRequest)
-// 		return
-// 	}
-// 	w.Header().Set("Content-Type", "application/json")
-// 	json.NewEncoder(w).Encode(
-// 		struct {
-// 			Rows []map[string]any `json:"rows"`
-// 		}{Rows: rows},
-// 	)
-// }
+func httpExecute(w http.ResponseWriter, r *http.Request) {
+	err, code, msg := httpCheckAuth(w, r)
+	if err != nil {
+		http.Error(w, msg, code)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	//todo: pass msg id
+	var m struct {
+		SQL string `json:"sql"`
+	}
+	err = json.NewDecoder(r.Body).Decode(&m)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	query := strings.TrimSpace(m.SQL)
+	if query == "" {
+		http.Error(w, "No SQL found on this message", http.StatusBadRequest)
+		return
+	}
+	//todo: create cancel context
+	rows, err := SQLM.ExecuteSQL(query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(
+		struct {
+			Rows []map[string]any `json:"rows"`
+		}{Rows: rows},
+	)
+}
