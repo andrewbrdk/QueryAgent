@@ -542,68 +542,52 @@ func handleSlackSlash(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to parse command", http.StatusBadRequest)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	text := strings.TrimSpace(cmd.Text)
 	if text == "" {
-		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
 			"text": "Usage: `/sqlm select * from users`",
 		})
 		return
 	}
+	w.Write([]byte(`{"response_type":"in_channel", "text":"Generating SQL..."}`))
 
 	//todo: define func
-	msgs := buildLLMMessages(text)
-	assistantText, err := callOpenRouter(msgs)
-	if err != nil {
-		errorLog.Printf("Slack, OpenRouter request failed: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"text": fmt.Sprintf("Error: %v", err),
+	go func(cmd slack.SlashCommand, userText string) {
+		msgs := buildLLMMessages(text)
+		assistantText, err := callOpenRouter(msgs)
+		if err != nil {
+			errorLog.Printf("Slack, OpenRouter request failed: %v", err)
+			json.NewEncoder(w).Encode(map[string]string{
+				"text": fmt.Sprintf("Error: %v", err),
+			})
+			return
+		}
+		var parsed struct {
+			Outline string `json:"outline"`
+			SQL     string `json:"sql"`
+		}
+		err = json.Unmarshal([]byte(assistantText), &parsed)
+		if err != nil {
+			errorLog.Printf("Slack, Failed to parse assistant response: %v", err)
+			json.NewEncoder(w).Encode(map[string]string{
+				"text": fmt.Sprintf("Error: %v", err),
+			})
+			return
+		}
+		outline := strings.TrimSpace(parsed.Outline)
+		sql := strings.TrimSpace(parsed.SQL)
+		//todo: format and validate SQL
+		go logLLM(LLMLogEntry{
+			ID:        generateUniqueID(),
+			Timestamp: time.Now(),
+			UserText:  text,
+			Outline:   outline,
+			SQL:       sql,
+			Context:   msgs,
 		})
-		return
-	}
-	var parsed struct {
-		Outline string `json:"outline"`
-		SQL     string `json:"sql"`
-	}
-	err = json.Unmarshal([]byte(assistantText), &parsed)
-	if err != nil {
-		errorLog.Printf("Slack, Failed to parse assistant response: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"text": fmt.Sprintf("Error: %v", err),
-		})
-		return
-	}
-	outline := strings.TrimSpace(parsed.Outline)
-	sql := strings.TrimSpace(parsed.SQL)
-	//todo: format and validate SQL
-	go logLLM(LLMLogEntry{
-		ID:        generateUniqueID(),
-		Timestamp: time.Now(),
-		UserText:  text,
-		Outline:   outline,
-		SQL:       sql,
-		Context:   msgs,
-	})
-
-	// Build response blocks
-	blocks := []slack.Block{
-		slack.NewSectionBlock(
-			slack.NewTextBlockObject("mrkdwn", "*SQL Generated*", false, false),
-			nil, nil,
-		),
-		slack.NewSectionBlock(
-			slack.NewTextBlockObject("mrkdwn", "*Outline:*\n"+outline, false, false),
-			nil, nil,
-		),
-		slack.NewSectionBlock(
-			slack.NewTextBlockObject("mrkdwn", "*Query:*\n```sql\n"+sql+"\n```", false, false),
-			nil, nil,
-		),
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"blocks": blocks})
+		postToResponseURL(cmd.ResponseURL, "```sql\n"+sql+"\n```")
+	}(cmd, text)
 	infoLog.Printf("Slack slash: query=%s", text)
 }
 
@@ -624,4 +608,19 @@ func verifySlackSignature(r *http.Request) bool {
 		return false
 	}
 	return sv.Ensure() == nil
+}
+
+func postToResponseURL(responseURL, message string) {
+	payload := map[string]interface{}{
+		"replace_original": true,
+		"text":             message,
+	}
+	data, _ := json.Marshal(payload)
+	req, _ := http.NewRequest("POST", responseURL, bytes.NewBuffer(data))
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 10 * time.Second}
+	_, err := client.Do(req)
+	if err != nil {
+		errorLog.Printf("Failed to replace Slack response: %v", err)
+	}
 }
