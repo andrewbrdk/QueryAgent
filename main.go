@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/slack-go/slack"
 )
 
 //go:embed index.html style.css
@@ -37,13 +39,14 @@ type Sqlm struct {
 }
 
 type Config struct {
-	port            string
-	password        string
-	openRouterKey   string
-	openRouterModel string
-	execDB          string
-	logFile         string
-	contextDir      string
+	port               string
+	password           string
+	openRouterKey      string
+	openRouterModel    string
+	execDB             string
+	logFile            string
+	contextDir         string
+	slackSigningSecret string
 }
 
 type LLMMessage struct {
@@ -128,6 +131,10 @@ func initConfig() {
 	CONF.contextDir = os.Getenv("SQLM_CONTEXT_DIR")
 	if CONF.contextDir == "" {
 		errorLog.Printf("No context directory configured.")
+	}
+	CONF.slackSigningSecret = os.Getenv("SQLM_SLACK_SIGNING_SECRET")
+	if CONF.slackSigningSecret == "" {
+		errorLog.Printf("SQLM_SLACK_SIGNING_SECRET is not set.")
 	}
 }
 
@@ -347,6 +354,7 @@ func httpServer() {
 	http.HandleFunc("/checkauth", httpCheckAuthHandler)
 	http.HandleFunc("/message", httpUserMessage)
 	http.HandleFunc("/execute", httpExecute)
+	http.HandleFunc("/slack/slash", handleSlackSlash)
 	log.Fatal(http.ListenAndServe(CONF.port, nil))
 }
 
@@ -521,4 +529,99 @@ func httpExecute(w http.ResponseWriter, r *http.Request) {
 			Rows []map[string]any `json:"rows"`
 		}{Rows: rows},
 	)
+}
+
+func handleSlackSlash(w http.ResponseWriter, r *http.Request) {
+	if !verifySlackSignature(r) {
+		http.Error(w, "Invalid signature", http.StatusUnauthorized)
+		return
+	}
+	cmd, err := slack.SlashCommandParse(r)
+	if err != nil {
+		errorLog.Printf("Failed to parse Slack slash command: %v", err)
+		http.Error(w, "Failed to parse command", http.StatusBadRequest)
+		return
+	}
+	text := strings.TrimSpace(cmd.Text)
+	if text == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"text": "Usage: `/sqlm select * from users`",
+		})
+		return
+	}
+
+	//todo: define func
+	msgs := buildLLMMessages(text)
+	assistantText, err := callOpenRouter(msgs)
+	if err != nil {
+		errorLog.Printf("Slack, OpenRouter request failed: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"text": fmt.Sprintf("Error: %v", err),
+		})
+		return
+	}
+	var parsed struct {
+		Outline string `json:"outline"`
+		SQL     string `json:"sql"`
+	}
+	err = json.Unmarshal([]byte(assistantText), &parsed)
+	if err != nil {
+		errorLog.Printf("Slack, Failed to parse assistant response: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"text": fmt.Sprintf("Error: %v", err),
+		})
+		return
+	}
+	outline := strings.TrimSpace(parsed.Outline)
+	sql := strings.TrimSpace(parsed.SQL)
+	//todo: format and validate SQL
+	go logLLM(LLMLogEntry{
+		ID:        generateUniqueID(),
+		Timestamp: time.Now(),
+		UserText:  text,
+		Outline:   outline,
+		SQL:       sql,
+		Context:   msgs,
+	})
+
+	// Build response blocks
+	blocks := []slack.Block{
+		slack.NewSectionBlock(
+			slack.NewTextBlockObject("mrkdwn", "*SQL Generated*", false, false),
+			nil, nil,
+		),
+		slack.NewSectionBlock(
+			slack.NewTextBlockObject("mrkdwn", "*Outline:*\n"+outline, false, false),
+			nil, nil,
+		),
+		slack.NewSectionBlock(
+			slack.NewTextBlockObject("mrkdwn", "*Query:*\n```sql\n"+sql+"\n```", false, false),
+			nil, nil,
+		),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"blocks": blocks})
+	infoLog.Printf("Slack slash: query=%s", text)
+}
+
+func verifySlackSignature(r *http.Request) bool {
+	if CONF.slackSigningSecret == "" {
+		return false
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	sv, err := slack.NewSecretsVerifier(r.Header, CONF.slackSigningSecret)
+	if err != nil {
+		return false
+	}
+	if _, err = sv.Write(body); err != nil {
+		return false
+	}
+	return sv.Ensure() == nil
 }
