@@ -127,6 +127,11 @@ x-sqlm {
 				cursor: not-allowed;
 			}
 		}
+		.errmsg {
+			color: #b00020;
+			margin-top: 0;
+			font-style: italic;
+		}
 	}
 	#prompt {
 		#messageinput {
@@ -155,10 +160,17 @@ x-sqlm {
 			*/
 		}
 	}
-	.errmsg {
-		color: #b00020;
-		margin-top: 0;
-		font-style: italic;
+	#execresult {
+		display: flex;
+		flex-direction: row;
+  		justify-content: center;
+		align-items: flex-start;
+
+		th, td {
+			text-align: left;
+			padding-right: 0.9rem;
+			font-size: 0.9rem;
+		}
 	}
 }
 

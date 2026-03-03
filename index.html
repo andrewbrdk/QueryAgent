@@ -277,23 +277,29 @@ class XSqlm extends HTMLElement {
 			return;
 		}
 		const cols = Object.keys(rows[0] ?? {});
-		const head = cols.map((c) => `<th>${escapeHTML(c)}</th>`).join("");
-		const body = rows.map((r) => {
+		const ths = cols.map((c) => `<th>${escapeHTML(c)}</th>`)
+		const head = `<thead><tr>${ths.join("")}</tr></thead>`;
+		const trs = rows.map((r) => {
 			const tds = cols.map((c) => {
 				const v = r[c];
-				const s = v == null ? "NULL" : (typeof v === "object" ? JSON.stringify(v) : String(v));
+				let s;
+				if (v == null) {
+					s = "NULL";
+				} else if (typeof v === "object") {
+					s = JSON.stringify(v);
+				} else {
+					s = String(v);
+				}
 				return `<td>${escapeHTML(s)}</td>`;
-			}).join("");
-			return `<tr>${tds}</tr>`;
-		}).join("");
+			});
+			return `<tr>${tds.join("")}</tr>`;
+		});
+		const body = `<tbody>${trs.join("")}</tbody>`;
 		this.#execresult.innerHTML = `
-			<div class="sql-result-table-wrap">
-				<table class="sql-result-table">
-					<thead><tr>${head}</tr></thead>
-					<tbody>${body}</tbody>
-				</table>
-			</div>
-		`;
+			<table>
+				${head}
+				${body}
+			</table>`;
 	}
 }
 
