@@ -153,6 +153,8 @@ x-queryagent {
 			margin-top: 0.2rem;
 			margin-bottom: 0;
 			font-family: monospace;
+			outline: none;
+			resize: none;
 			/*
 			background: #f5f5f5;
 			border-radius: 8px;

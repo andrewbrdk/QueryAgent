@@ -120,9 +120,7 @@ class XQueryagent extends HTMLElement {
 			</section>
 			<section id="response" hidden>
 				<div class="label">Query:</div>
-				<div id="query" class="mainarea">
-					<pre id="sqlcode"></pre>
-				</div>
+				<textarea id="sqlcode" class="mainarea"></textarea>
 				<div class="btns">
 					<button id="executesql" type="button">Execute</button>
 				</div>
@@ -237,7 +235,7 @@ class XQueryagent extends HTMLElement {
 		this.#execstatusmsg.innerHTML = "";
 		this.#execstatus.hidden = false;
 		this.#exec.hidden = true;
-		const sql = this.#sqlcode.textContent || "";
+		const sql = this.#sqlcode.value || "";
 		if (!sql) {
 			this.#execstatusmsg.innerHTML = `<div class="errmsg">No SQL to execute.</div>`;
 			button.disabled = false;
