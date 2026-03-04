@@ -595,7 +595,7 @@ func handleSlackSlash(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		outline := strings.TrimSpace(parsed.Outline)
-		sql := strings.TrimSpace(parsed.SQL)
+		sql := formatSQL(parsed.SQL)
 		//todo: format and validate SQL
 		go logLLM(LLMLogEntry{
 			ID:        generateUniqueID(),
