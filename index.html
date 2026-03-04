@@ -259,10 +259,7 @@ class XQueryagent extends HTMLElement {
 				return;
 			}
 			const payload = await res.json();
-			const columnNames = Array.isArray(payload.column_names) ? payload.column_names : [];
-			const columnTypes = Array.isArray(payload.column_types) ? payload.column_types : [];
-			const rows = Array.isArray(payload.rows) ? payload.rows : [];
-			this.renderExecRows(columnNames, columnTypes, rows);
+			this.renderExecRows(payload);
 			this.#exec.hidden = false;
 			this.#execstatus.hidden = true;
 		} catch (e) {
@@ -273,7 +270,11 @@ class XQueryagent extends HTMLElement {
 		}
 	}
 
-	renderExecRows(columnNames, columnTypes, rows) {
+	renderExecRows(res) {
+		const columnNames = Array.isArray(res.column_names) ? res.column_names : [];
+		const columnTypes = Array.isArray(res.column_types) ? res.column_types : [];
+		const rows = Array.isArray(res.rows) ? res.rows : [];
+		const truncated = res.truncated === true;
 		if (columnNames.length === 0 && rows.length === 0) {
 			this.#execresult.innerHTML = `<div class="sql-empty">No rows returned.</div>`;
 			return;
@@ -302,7 +303,11 @@ class XQueryagent extends HTMLElement {
 			return `<tr>${tds.join("")}</tr>`;
 		});
 		const body = `<tbody>${trs.join("")}</tbody>`;
+		const truncatedMsg = truncated
+			? `<div class="infomsg">Results are limited to ${rows.length} rows.</div>`
+			: "";
 		this.#execresult.innerHTML = `
+			${truncatedMsg}
 			<table>
 				${head}
 				${body}

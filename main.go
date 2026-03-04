@@ -20,6 +20,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/slack-go/slack"
 )
@@ -36,7 +37,7 @@ var CONF Config
 var QUERYAGENT Queryagent
 
 type Queryagent struct {
-	execConn *pgx.Conn
+	execConnPool *pgxpool.Pool
 }
 
 type Config struct {
@@ -104,8 +105,10 @@ func main() {
 	errorLog = log.New(os.Stdout, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 	initConfig()
 	jwtSecretKey = generateRandomKey(32)
-	QUERYAGENT.initExecConn()
-	defer QUERYAGENT.execConn.Close(context.Background())
+	QUERYAGENT.initExecConnPool()
+	if QUERYAGENT.execConnPool != nil {
+		defer QUERYAGENT.execConnPool.Close()
+	}
 	httpServer()
 }
 
@@ -149,22 +152,21 @@ func generateRandomKey(size int) []byte {
 	return key
 }
 
-func (S *Queryagent) initExecConn() {
+func (Q *Queryagent) initExecConnPool() {
 	if strings.TrimSpace(CONF.execDB) == "" {
 		infoLog.Printf("No execution database configured.")
 		return
 	}
-	//todo: set timeout from config
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	conn, err := pgx.Connect(ctx, CONF.execDB)
+	pool, err := pgxpool.New(ctx, CONF.execDB)
 	if err != nil {
 		log.Fatalf("cannot open execution db connection: %v", err)
 	}
-	if err := conn.Ping(ctx); err != nil {
+	if err := pool.Ping(ctx); err != nil {
 		log.Fatalf("cannot ping execution db connection: %v", err)
 	}
-	S.execConn = conn
+	Q.execConnPool = pool
 }
 
 func buildLLMMessages(msg string) []LLMMessage {
@@ -281,25 +283,34 @@ type SQLResult struct {
 	ColumnNames []string `json:"column_names"`
 	ColumnTypes []string `json:"column_types"`
 	Rows        [][]any  `json:"rows"`
+	Truncated   bool     `json:"truncated"`
 }
 
-func (S *Queryagent) ExecuteSQL(query string) (SQLResult, error) {
+func (Q *Queryagent) ExecuteSQL(query string) (SQLResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return SQLResult{}, errors.New("Empty query.")
 	}
-	if S.execConn == nil {
+	if Q.execConnPool == nil {
 		return SQLResult{}, errors.New("Execution DB is not set.")
 	}
 	//todo: set timeout from config
 	//todo: pass user context for cancellation
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	tx, err := S.execConn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+
+	conn, err := Q.execConnPool.Acquire(ctx)
+	if err != nil {
+		return SQLResult{}, err
+	}
+	defer conn.Release()
+
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return SQLResult{}, err
 	}
 	defer tx.Rollback(ctx)
+
 	rows, err := tx.Query(ctx, query)
 	if err != nil {
 		return SQLResult{}, err
@@ -310,7 +321,7 @@ func (S *Queryagent) ExecuteSQL(query string) (SQLResult, error) {
 	var result SQLResult
 	for _, fd := range fds {
 		result.ColumnNames = append(result.ColumnNames, string(fd.Name))
-		dt, _ := S.execConn.TypeMap().TypeForOID(uint32(fd.DataTypeOID))
+		dt, _ := conn.Conn().TypeMap().TypeForOID(uint32(fd.DataTypeOID))
 		result.ColumnTypes = append(result.ColumnTypes, dt.Name)
 	}
 
@@ -318,6 +329,8 @@ func (S *Queryagent) ExecuteSQL(query string) (SQLResult, error) {
 	const maxRows = 30
 	for rows.Next() {
 		if len(result.Rows) >= maxRows {
+			result.Truncated = true
+			rows.Close()
 			break
 		}
 		values, err := rows.Values()
