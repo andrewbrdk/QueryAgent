@@ -173,6 +173,9 @@ x-queryagent {
 			padding-right: 0.9rem;
 			font-size: 0.9rem;
 		}
+		th.numeric, td.numeric {
+			text-align: right;
+		}
 	}
 }
 

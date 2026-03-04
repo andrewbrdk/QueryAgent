@@ -217,7 +217,7 @@ class XQueryagent extends HTMLElement {
 			const payload = await res.json();
 			this.#sendstatus.hidden = true;
 			this.#response.hidden = false;
-			this.#sqlcode.innerHTML = `${escapeHTML(payload.sql ?? "")}`;
+			this.#sqlcode.value = `${escapeHTML(payload.sql ?? "")}`;
 		} catch (e) {
 			this.#sendstatusmsg.innerHTML = `<div class="errmsg">Failed to send message.</div>`;
 		} finally {
@@ -255,8 +255,10 @@ class XQueryagent extends HTMLElement {
 				return;
 			}
 			const payload = await res.json();
+			const columnNames = Array.isArray(payload.column_names) ? payload.column_names : [];
+			const columnTypes = Array.isArray(payload.column_types) ? payload.column_types : [];
 			const rows = Array.isArray(payload.rows) ? payload.rows : [];
-			this.renderExecRows(rows);
+			this.renderExecRows(columnNames, columnTypes, rows);
 			this.#exec.hidden = false;
 			this.#execstatus.hidden = true;
 		} catch (e) {
@@ -267,17 +269,20 @@ class XQueryagent extends HTMLElement {
 		}
 	}
 
-	renderExecRows(rows) {
-		if (rows.length === 0) {
+	renderExecRows(columnNames, columnTypes, rows) {
+		if (columnNames.length === 0 && rows.length === 0) {
 			this.#execresult.innerHTML = `<div class="sql-empty">No rows returned.</div>`;
 			return;
 		}
-		const cols = Object.keys(rows[0] ?? {});
-		const ths = cols.map((c) => `<th>${escapeHTML(c)}</th>`)
+		const numericTypes = new Set(["int2", "int4", "int8", "float4", "float8", "numeric"]);
+		const ths = columnNames.map((name, i) => {
+			const type = columnTypes[i] ?? "";
+			const isNumeric = numericTypes.has(type) ? 'numeric' : '';
+			return `<th class="${isNumeric}">${escapeHTML(name)}</th>`;
+		});
 		const head = `<thead><tr>${ths.join("")}</tr></thead>`;
-		const trs = rows.map((r) => {
-			const tds = cols.map((c) => {
-				const v = r[c];
+		const trs = rows.map((row) => {
+			const tds = row.map((v, i) => {
 				let s;
 				if (v == null) {
 					s = "NULL";
@@ -286,7 +291,9 @@ class XQueryagent extends HTMLElement {
 				} else {
 					s = String(v);
 				}
-				return `<td>${escapeHTML(s)}</td>`;
+				const type = columnTypes[i] ?? "";
+				const isNumeric = numericTypes.has(type) ? 'numeric' : '';
+				return `<td class="${isNumeric}">${escapeHTML(s)}</td>`;
 			});
 			return `<tr>${tds.join("")}</tr>`;
 		});

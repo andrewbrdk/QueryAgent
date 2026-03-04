@@ -277,13 +277,19 @@ func formatSQL(sql string) string {
 	return formatted
 }
 
-func (S *Queryagent) ExecuteSQL(query string) ([]map[string]any, error) {
+type SQLResult struct {
+	ColumnNames []string `json:"column_names"`
+	ColumnTypes []string `json:"column_types"`
+	Rows        [][]any  `json:"rows"`
+}
+
+func (S *Queryagent) ExecuteSQL(query string) (SQLResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil, errors.New("Empty query.")
+		return SQLResult{}, errors.New("Empty query.")
 	}
 	if S.execConn == nil {
-		return nil, errors.New("Execution DB is not set.")
+		return SQLResult{}, errors.New("Execution DB is not set.")
 	}
 	//todo: set timeout from config
 	//todo: pass user context for cancellation
@@ -291,46 +297,51 @@ func (S *Queryagent) ExecuteSQL(query string) ([]map[string]any, error) {
 	defer cancel()
 	tx, err := S.execConn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return nil, err
+		return SQLResult{}, err
 	}
 	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx, query)
 	if err != nil {
-		return nil, err
+		return SQLResult{}, err
 	}
 	defer rows.Close()
 
 	fds := rows.FieldDescriptions()
+	var result SQLResult
+	for _, fd := range fds {
+		result.ColumnNames = append(result.ColumnNames, string(fd.Name))
+		dt, _ := S.execConn.TypeMap().TypeForOID(uint32(fd.DataTypeOID))
+		result.ColumnTypes = append(result.ColumnTypes, dt.Name)
+	}
+
 	//todo: deal with large results.
 	const maxRows = 30
-	results := make([]map[string]any, 0, maxRows)
 	for rows.Next() {
-		if len(results) >= maxRows {
+		if len(result.Rows) >= maxRows {
 			break
 		}
 		values, err := rows.Values()
 		if err != nil {
-			return nil, err
+			return SQLResult{}, err
 		}
-		row := make(map[string]any, len(values))
-		for i, fd := range fds {
-			v := values[i]
+		row := make([]any, len(values))
+		for i, v := range values {
 			if b, ok := v.([]byte); ok {
-				row[string(fd.Name)] = string(b)
+				row[i] = string(b)
 			} else {
-				row[string(fd.Name)] = v
+				row[i] = v
 			}
 		}
-		results = append(results, row)
+		result.Rows = append(result.Rows, row)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return SQLResult{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, err
+		return SQLResult{}, err
 	}
-	return results, nil
+	return result, nil
 }
 
 func logLLM(entry LLMLogEntry) error {
@@ -537,17 +548,13 @@ func httpExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	//todo: create cancel context
-	rows, err := QUERYAGENT.ExecuteSQL(query)
+	result, err := QUERYAGENT.ExecuteSQL(query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(
-		struct {
-			Rows []map[string]any `json:"rows"`
-		}{Rows: rows},
-	)
+	json.NewEncoder(w).Encode(result)
 }
 
 func handleSlackSlash(w http.ResponseWriter, r *http.Request) {
