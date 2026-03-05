@@ -396,6 +396,7 @@ func httpServer() {
 	http.HandleFunc("/login", httpLogin)
 	http.HandleFunc("/checkauth", httpCheckAuthHandler)
 	http.HandleFunc("/message", httpUserMessage)
+	http.HandleFunc("/fix", httpFixQuery)
 	http.HandleFunc("/execute", httpExecute)
 	http.HandleFunc("/slack/slash", handleSlackSlash)
 	log.Fatal(http.ListenAndServe(CONF.port, nil))
@@ -529,6 +530,77 @@ func httpUserMessage(w http.ResponseWriter, r *http.Request) {
 	})
 	//todo: log on failure
 	//todo: error is lost
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"outline": outline,
+		"sql":     sql,
+	})
+}
+
+func httpFixQuery(w http.ResponseWriter, r *http.Request) {
+	err, code, msg := httpCheckAuth(w, r)
+	if err != nil {
+		http.Error(w, msg, code)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Text  string `json:"text"`
+		SQL   string `json:"sql"`
+		Error string `json:"error"`
+	}
+	err = json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	//todo: don't include error message if empty.
+	//todo: change prompt?
+	fixPrompt := fmt.Sprintf(
+		`Fix the SQL below. Make sure it answers the original request. 
+		SQL:
+		 	%s
+		
+		Error message:
+		 	%s
+		 
+		The original request:
+		    %s
+		`,
+		strings.TrimSpace(req.SQL),
+		strings.TrimSpace(req.Error),
+		strings.TrimSpace(req.Text),
+	)
+	msgs := buildLLMMessages(fixPrompt)
+	assistantText, err := callOpenRouter(msgs)
+	if err != nil {
+		errorLog.Printf("OpenRouter fix request failed: %v", err)
+		http.Error(w, "Assistant unavailable", http.StatusBadGateway)
+		return
+	}
+	var parsed struct {
+		Outline string `json:"outline"`
+		SQL     string `json:"sql"`
+	}
+	err = json.Unmarshal([]byte(assistantText), &parsed)
+	if err != nil {
+		errorLog.Printf("Failed to parse assistant fix response: %v", err)
+		http.Error(w, "Assistant returned invalid JSON", http.StatusBadGateway)
+		return
+	}
+	outline := strings.TrimSpace(parsed.Outline)
+	sql := formatSQL(parsed.SQL)
+	go logLLM(LLMLogEntry{
+		ID:        generateUniqueID(),
+		Timestamp: time.Now(),
+		UserText:  fixPrompt,
+		Outline:   outline,
+		SQL:       sql,
+		Context:   msgs,
+	})
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"outline": outline,

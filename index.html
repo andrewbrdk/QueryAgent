@@ -124,6 +124,7 @@ class XQueryagent extends HTMLElement {
 				<div class="btns">
 					<button id="copysql" type="button">Copy</button>
 					<button id="executesql" type="button">Execute</button>
+					<button id="fixsql" type="button" title="Send the message, query, and execution error to the LLM to generate a new query.">Fix</button>
 				</div>
 			</section>
 			<section id="execstatus" hidden>
@@ -156,13 +157,12 @@ class XQueryagent extends HTMLElement {
 	}
 
 	async render() {
-		//await this.updateMessages();
 		this.bindEvents();
 	}
 
 	bindEvents() {
 		this.unbindEvents();
-		
+
 		this.#sendmessage.onclick = async () => {
 			await this.sendMessage();
 		};
@@ -177,6 +177,9 @@ class XQueryagent extends HTMLElement {
 		};
 		this.querySelector("#executesql").onclick = async () => {
 			await this.executeSQLForMessage();
+		};
+		this.querySelector("#fixsql").onclick = async () => {
+			await this.fixSQL();
 		};
 		this.querySelector("#closeresults").onclick = () => {
 			this.#exec.hidden = true;
@@ -206,7 +209,7 @@ class XQueryagent extends HTMLElement {
 		this.#isSendingMessage = true;
 		this.#messageinput.disabled = true;
 		this.#sendmessage.disabled = true;
-		this.#sendstatusmsg.innerHTML = `<em>Waiting for response ...</em>`;		
+		this.#sendstatusmsg.innerHTML = `<em>Waiting for response ...</em>`;
 
 		try {
 			const res = await fetch('/message', {
@@ -267,6 +270,34 @@ class XQueryagent extends HTMLElement {
 		} finally {
 			button.disabled = false;
 			button.textContent = oldLabel;
+		}
+	}
+
+	async fixSQL() {
+		const sql = this.#sqlcode.value || "";
+		const text = this.#messageinput.value.trim();
+		const error = this.#execstatusmsg.textContent.trim();
+		this.#sendstatus.hidden = false;
+		this.#sendstatusmsg.innerHTML = `<em>Fixing SQL ...</em>`;
+		this.#response.hidden = true;
+		this.#exec.hidden = true;
+		this.#execstatus.hidden = true;
+		try {
+			const res = await fetch('/fix', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ text, sql, error }),
+			});
+			if (!res.ok) {
+				this.#sendstatusmsg.innerHTML = `<div class="errmsg">Fix request failed.</div>`;
+				return;
+			}
+			const payload = await res.json();
+			this.#sendstatus.hidden = true;
+			this.#response.hidden = false;
+			this.#sqlcode.value = payload.sql ?? "";
+		} catch (e) {
+			this.#sendstatusmsg.innerHTML = `<div class="errmsg">Fix request failed.</div>`;
 		}
 	}
 
