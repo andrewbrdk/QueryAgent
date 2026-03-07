@@ -25,9 +25,6 @@ import (
 	"github.com/slack-go/slack"
 )
 
-//go:generate mkdir -p ./dist
-//go:generate npx tsc
-//go:generate cp index.html style.css ./dist
 //go:embed dist/index.html dist/style.css dist/app.js
 var embedded embed.FS
 

@@ -5,9 +5,9 @@ The service starts at http://localhost:8080/ after the following commands:
 ```bash
 git clone https://github.com/andrewbrdk/queryagent
 cd ./queryagent
-npm install typescript
+npm install
+npm run build
 go get queryagent
-go generate
 go build
 OPENROUTER_API_KEY=your-api-key OPENROUTER_MODEL=your/model QUERYAGENT_CONTEXT_PATH=./context_examples/ QUERYAGENT_LOG_FILE=logs/q.log ./queryagent
 ```

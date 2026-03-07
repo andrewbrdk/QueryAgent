@@ -1,9 +1,8 @@
 FROM node:25-alpine AS frontend
 WORKDIR /app
-COPY tsconfig.json app.ts index.html style.css ./
-RUN npm install typescript
-RUN npx tsc
-RUN cp index.html style.css dist/
+COPY package.json tsconfig.json app.ts index.html style.css ./
+RUN npm install
+RUN npm run build
 
 FROM golang:1.26 AS backend
 RUN apt-get update && apt-get install -y pgformatter
