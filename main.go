@@ -25,7 +25,10 @@ import (
 	"github.com/slack-go/slack"
 )
 
-//go:embed index.html style.css
+//go:generate mkdir -p ./dist
+//go:generate npx tsc
+//go:generate cp index.html style.css ./dist
+//go:embed dist/index.html dist/style.css dist/app.js
 var embedded embed.FS
 
 var jwtSecretKey []byte
@@ -405,7 +408,7 @@ func generateUniqueID() string {
 
 func httpServer() {
 	http.HandleFunc("/", httpIndex)
-	http.Handle("/style.css", http.FileServer(http.FS(embedded)))
+	http.Handle("/dist/", http.FileServer(http.FS(embedded)))
 	http.HandleFunc("/login", httpLogin)
 	http.HandleFunc("/checkauth", httpCheckAuthHandler)
 	http.HandleFunc("/message", httpUserMessage)
@@ -416,9 +419,9 @@ func httpServer() {
 }
 
 func httpIndex(w http.ResponseWriter, r *http.Request) {
-	data, err := embedded.ReadFile("index.html")
+	data, err := embedded.ReadFile("dist/index.html")
 	if err != nil {
-		http.Error(w, "Error loading chats", http.StatusInternalServerError)
+		http.Error(w, "Error loading page", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html")
