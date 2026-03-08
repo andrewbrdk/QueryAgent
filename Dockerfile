@@ -1,7 +1,7 @@
 FROM node:25-alpine AS frontend
 WORKDIR /app
-COPY package.json tsconfig.json app.ts index.html style.css ./
-RUN npm install
+COPY package.json package-lock.json tsconfig.json app.ts index.html style.css ./
+RUN npm ci
 RUN npm run build
 
 FROM golang:1.26 AS backend

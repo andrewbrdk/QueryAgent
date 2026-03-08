@@ -1,8 +1,12 @@
 {
   "dependencies": {
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vega-embed": "^7.1.0"
   },
   "scripts": {
-    "build": "tsc && cp index.html style.css dist/"
+    "build": "tsc --noEmit && esbuild app.ts --bundle --outfile=dist/app.js && cp index.html style.css dist/"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.3"
   }
 }

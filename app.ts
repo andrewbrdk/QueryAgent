@@ -1,17 +1,23 @@
+import vegaEmbed, { VisualizationSpec } from 'vega-embed';
+
 class XMain extends HTMLElement {
 	#login: XLogin;
 	#queryagent: XQueryagent;
+	#chartagent: XChartAgent;
 
 	constructor() {
 		super();
 		this.innerHTML = `
 			<x-login></x-login>
 			<x-queryagent></x-queryagent>
+			<x-chartagent></x-chartagent>
 		`;
-		this.#queryagent = this.querySelector('x-queryagent') as XQueryagent;
 		this.#login = this.querySelector('x-login') as XLogin;
+		this.#queryagent = this.querySelector('x-queryagent') as XQueryagent;
+		this.#chartagent = this.querySelector('x-chartagent') as XChartAgent;
 		this.#login.hidden = true;
 		this.#queryagent.hidden = true;
+		this.#chartagent.hidden = true;
 		this.addEventListener('loginsuccess', (e) => {
 			this.renderPage();
 		});
@@ -21,16 +27,23 @@ class XMain extends HTMLElement {
 	async renderPage() {
 		let res = await fetch('/checkauth');
 		const statusCode = res.status;
-		if (statusCode == 200) {
-			this.#queryagent.hidden = false;
-			this.#login.hidden = true;
-			this.#queryagent.render();
-		} else if (statusCode == 401) { // unauthorized
+		if (statusCode == 401) { // unauthorized
 			this.#login.hidden = false;
 			this.#queryagent.hidden = true;
-		} else {
-			this.#queryagent.hidden = true;
+			this.#chartagent.hidden = true;
+			return;
 		}
+    	const showChart = (window.location.pathname === '/chart');
+    	this.#login.hidden = true;
+    	if (showChart) {
+			this.#queryagent.hidden = true;
+    		this.#chartagent.hidden = false;
+        	this.#chartagent.render();
+    	} else {
+			this.#queryagent.hidden = false;
+    		this.#chartagent.hidden = true;
+        	this.#queryagent.render();
+    	}
 	}
 }
 
@@ -76,17 +89,17 @@ class XLogin extends HTMLElement {
 	}
 }
 
-interface SQLResult {                                                                                                   
-    column_names: string[];                                                                                             
-    column_types: string[];                                                                                             
-    rows: unknown[][];                                                                                                  
-    truncated: boolean;                                                                                                 
-}                                                                                                                       
-                                                                                                                        
-interface LLMPayload {                                                                                                  
-    sql?: string;                                                                                                       
-    outline?: string;                                                                                                   
-} 
+interface SQLResult {
+	column_names: string[];
+	column_types: string[];
+	rows: unknown[][];
+	truncated: boolean;
+}
+
+interface LLMPayload {
+	sql?: string;
+	outline?: string;
+}
 
 class XQueryagent extends HTMLElement {
 	#messageinput: HTMLInputElement;
@@ -334,6 +347,181 @@ class XQueryagent extends HTMLElement {
 	}
 }
 
+interface ChartPayload {
+	outline?: string;
+	spec?: Record<string, unknown>;
+}
+
+class XChartAgent extends HTMLElement {
+	#userinput: HTMLTextAreaElement;
+	#sqlinput: HTMLTextAreaElement;
+	#status: HTMLElement;
+	#statusmsg: HTMLElement;
+	#specsection: HTMLElement;
+	#speceditor: HTMLTextAreaElement;
+	#rendersection: HTMLElement;
+	#chartresult: HTMLElement;
+
+	constructor() {
+		super();
+		this.innerHTML = `
+			<h1>Chart Agent</h1>
+			<section id="chartprompt">
+				<div class="label">Message:</div>
+				<textarea id="chartuserinput" class="mainarea" placeholder="Describe the chart you want."></textarea>
+				<div class="btns">
+					<button id="generatesql" type="button">Send to QueryAgent</button>
+				</div>
+			</section>
+			<section>
+				<div class="label">SQL:</div>
+				<textarea id="chartsqlinput" class="mainarea" placeholder="SQL query for chart data."></textarea>
+				<div class="btns">
+					<button id="generatechart" type="button">Generate Chart Spec</button>
+				</div>
+			</section>
+			<section id="chartstatus" hidden>
+				<div class="label"></div>
+				<div id="chartstatusmsg" class="mainarea"></div>
+				<div class="btns"></div>
+			</section>
+			<section id="chartspec" hidden>
+				<div class="label">Chart Spec:</div>
+				<textarea id="chartspeceditor" class="mainarea"></textarea>
+				<div class="btns">
+					<button id="renderchart" type="button">Render Chart</button>
+				</div>
+			</section>
+			<section id="chartrender" hidden>
+				<div class="label">Chart:</div>
+				<div id="chartresult" class="mainarea"></div>
+				<div class="btns">
+					<button id="closechart" type="button">Close Chart</button>
+				</div>
+			</section>`;
+		this.#userinput = this.querySelector('#chartuserinput') as HTMLTextAreaElement;
+		this.#sqlinput = this.querySelector('#chartsqlinput') as HTMLTextAreaElement;
+		this.#status = this.querySelector('#chartstatus') as HTMLElement;
+		this.#statusmsg = this.querySelector('#chartstatusmsg') as HTMLElement;
+		this.#specsection = this.querySelector('#chartspec') as HTMLElement;
+		this.#speceditor = this.querySelector('#chartspeceditor') as HTMLTextAreaElement;
+		this.#rendersection = this.querySelector('#chartrender') as HTMLElement;
+		this.#chartresult = this.querySelector('#chartresult') as HTMLElement;
+
+		(this.querySelector('#generatechart') as HTMLButtonElement).onclick = async () => {
+			await this.generate();
+		};
+		(this.querySelector('#renderchart') as HTMLButtonElement).onclick = async () => {
+			await this.renderChart();
+		};
+		(this.querySelector('#closechart') as HTMLButtonElement).onclick = () => {
+			this.closeChart();
+		};
+	}
+
+	async render() {
+		//this.bindEvents();
+	}
+
+	async generate() {
+		const text = this.#userinput.value.trim();
+		const sql = this.#sqlinput.value.trim();
+		if (!text || !sql) {
+			this.showStatus(`<div class="errmsg">Message and SQL are required.</div>`);
+			return;
+		}
+		this.showStatus(`<em>Generating chart spec...</em>`);
+		this.#specsection.hidden = true;
+		this.#rendersection.hidden = true;
+
+		try {
+			const res = await fetch('/chart/message', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ text, sql }),
+			});
+			if (!res.ok) {
+				const txt = await res.text();
+				this.showStatus(`<div class="errmsg">${escapeHTML(txt || "Chart generation failed.")}</div>`);
+				return;
+			}
+			const payload = await res.json() as ChartPayload;
+			if (!payload.spec) {
+				this.showStatus(`<div class="errmsg">No chart spec returned.</div>`);
+				return;
+			}
+			this.#status.hidden = true;
+			this.#speceditor.value = JSON.stringify(payload.spec, null, 2);
+			this.#specsection.hidden = false;
+		} catch (e) {
+			this.showStatus(`<div class="errmsg">Chart generation failed.</div>`);
+		}
+	}
+
+	async renderChart() {
+		const specText = this.#speceditor.value.trim();
+		if (!specText) {
+			this.showStatus(`<div class="errmsg">No spec to render.</div>`);
+			return;
+		}
+		let spec: Record<string, unknown>;
+		try {
+			spec = JSON.parse(specText);
+		} catch (e) {
+			this.showStatus(`<div class="errmsg">Invalid JSON in chart spec.</div>`);
+			return;
+		}
+
+		const sql = this.#sqlinput.value.trim();
+		if (!sql) {
+			this.showStatus(`<div class="errmsg">No SQL to execute.</div>`);
+			return;
+		}
+
+		this.showStatus(`<em>Fetching data...</em>`);
+		try {
+			const res = await fetch('/execute', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ sql }),
+			});
+			if (!res.ok) {
+				const txt = await res.text();
+				this.showStatus(`<div class="errmsg">${escapeHTML(txt || "Execution failed.")}</div>`);
+				return;
+			}
+			const result = await res.json() as SQLResult;
+			const rows = this.buildRows(result);
+			const specWithData = { ...spec, data: { values: rows } } as VisualizationSpec;
+
+			this.#status.hidden = true;
+			this.#chartresult.innerHTML = "";
+			this.#rendersection.hidden = false;
+
+			await vegaEmbed(this.#chartresult, specWithData, { actions: false });
+		} catch (e) {
+			this.showStatus(`<div class="errmsg">Failed to render chart.</div>`);
+		}
+	}
+
+	closeChart() {
+		this.#rendersection.hidden = true;
+		this.#chartresult.innerHTML = "";
+	}
+
+	showStatus(html: string) {
+		this.#status.hidden = false;
+		this.#statusmsg.innerHTML = html;
+	}
+
+	buildRows(res: SQLResult): Record<string, unknown>[] {
+		const cols = res.column_names ?? [];
+		return (res.rows ?? []).map(row =>
+			Object.fromEntries(cols.map((col, i) => [col, row[i]]))
+		);
+	}
+}
+
 function escapeHTML(str: string): string {
 	const div = document.createElement('div');
 	div.textContent = str;
@@ -343,3 +531,4 @@ function escapeHTML(str: string): string {
 customElements.define('x-main', XMain);
 customElements.define('x-login', XLogin);
 customElements.define('x-queryagent', XQueryagent);
+customElements.define('x-chartagent', XChartAgent);

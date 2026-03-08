@@ -63,26 +63,117 @@ type openRouterRequest struct {
 }
 
 const openRouterResponseFormat = `{
-  "type": "json_schema",
-  "json_schema": {
-    "name": "SQLResponse",
-    "strict": true,
-    "schema": {
+  	"type": "json_schema",
+  	"json_schema": {
+   		"name": "SQLResponse",
+    	"strict": true,
+    	"schema": {
+    		"type": "object",
+    		"properties": {
+          		"outline": {
+            		"type": "string",
+            		"description": "A brief outline of the SQL query logic."
+          		},
+          		"sql": {
+            		"type": "string",
+            		"description": "The SQL query to execute."
+          		}
+        	},
+        	"required": ["outline", "sql"],
+        	"additionalProperties": false
+    	}
+  	}
+}`
+
+const openRouterChartResponseFormat = `{
+	"type": "json_schema",
+	"json_schema": {
+    	"name": "ChartResponse",
+    	"strict": true,
+    	"schema": {
+      		"type": "object",
+      		"properties": {
+        		"outline": {
+          			"type": "string",
+          			"description": "A brief description of the chart."
+        		},
+				"charttype": {
+		  			"type": "string",
+					"enum": ["vega", "table", "text"],
+		  			"description": "Visualization type: vega, table, text."
+				},
+				"vega": %s
+      		},
+      		"required": ["outline", "charttype"],
+      		"additionalProperties": false
+    	}
+  	}
+}`
+
+// todo: map[string]any?
+const vegaSpec = `
+{
+  "type": "object",
+  "description": "Partial Vega-Lite specification. The system will add $schema and data later.",
+  "properties": {
+  	"title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+	"mark": {
+      "type": "string",
+      "enum": ["bar", "line"]
+    },
+    "encoding": {
       "type": "object",
       "properties": {
-        "outline": {
-          "type": "string",
-          "description": "A brief outline of the SQL query logic."
+        "x": {
+          "type": "object",
+          "properties": {
+            "field": { "type": "string" },
+            "type": {
+              "type": "string",
+              "enum": ["quantitative", "temporal", "ordinal", "nominal"]
+            },
+            "title": { "type": "string" }
+          },
+          "required": ["field", "type"],
+          "additionalProperties": false
         },
-        "sql": {
-          "type": "string",
-          "description": "The SQL query to execute."
+        "y": {
+          "type": "object",
+          "properties": {
+            "field": { "type": "string" },
+            "type": {
+              "type": "string",
+              "enum": ["quantitative", "temporal", "ordinal", "nominal"]
+            },
+            "title": { "type": "string" }
+          },
+          "required": ["field", "type"],
+          "additionalProperties": false
+        },
+        "color": {
+          "type": "object",
+          "properties": {
+            "field": { "type": "string" },
+            "type": {
+              "type": "string",
+              "enum": ["quantitative", "temporal", "ordinal", "nominal"]
+            }
+          },
+          "required": ["field", "type"],
+          "additionalProperties": false
         }
       },
-      "required": ["outline", "sql"],
+      "required": ["x", "y"],
       "additionalProperties": false
     }
-  }
+  },
+  "required": ["mark", "encoding"],
+  "additionalProperties": false
 }`
 
 type openRouterResponse struct {
@@ -97,6 +188,7 @@ type LLMLogEntry struct {
 	UserText  string       `json:"user_text"`
 	Outline   string       `json:"outline"`
 	SQL       string       `json:"sql"`
+	Vega      string       `json:"vega"`
 	Context   []LLMMessage `json:"context"`
 }
 
@@ -195,6 +287,28 @@ func buildLLMMessages(msg string) []LLMMessage {
 	return out
 }
 
+func buildChartLLMMessages(userText, sql string) []LLMMessage {
+	out := []LLMMessage{
+		{
+			Role: "system",
+			Content: `You are a data visualization assistant. 
+				Given a user request and a SQL query, return ONLY a valid JSON object as defined in the schema'.`,
+		},
+	}
+	// contextMessages := loadContext(CONF.contextPath)
+	// for _, contextMsg := range contextMessages {
+	// 	out = append(out, LLMMessage{
+	// 		Role:    "system",
+	// 		Content: contextMsg,
+	// 	})
+	// }
+	out = append(out, LLMMessage{
+		Role:    "user",
+		Content: fmt.Sprintf("User request: %s\n\nSQL:\n%s", userText, sql),
+	})
+	return out
+}
+
 func loadContext(contextPath string) []string {
 	if contextPath == "" {
 		return []string{}
@@ -235,14 +349,15 @@ func loadContext(contextPath string) []string {
 	return messages
 }
 
-func callOpenRouter(messages []LLMMessage) (string, error) {
+func callOpenRouter(messages []LLMMessage, responseFormat string) (string, error) {
 	reqBody := openRouterRequest{
 		Model:          CONF.openRouterModel,
 		Messages:       messages,
-		ResponseFormat: json.RawMessage([]byte(openRouterResponseFormat)),
+		ResponseFormat: json.RawMessage([]byte(responseFormat)),
 	}
 	b, err := json.Marshal(reqBody)
 	if err != nil {
+		errorLog.Printf("Failed to marshall request: %v", err)
 		return "", err
 	}
 	req, err := http.NewRequest(http.MethodPost, "https://openrouter.ai/api/v1/chat/completions", bytes.NewReader(b))
@@ -411,6 +526,7 @@ func httpServer() {
 	http.HandleFunc("/message", httpUserMessage)
 	http.HandleFunc("/fix", httpFixQuery)
 	http.HandleFunc("/execute", httpExecute)
+	http.HandleFunc("/chart/message", httpChartMessage)
 	http.HandleFunc("/slack/slash", handleSlackSlash)
 	log.Fatal(http.ListenAndServe(CONF.port, nil))
 }
@@ -514,7 +630,7 @@ func httpUserMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Text = strings.TrimSpace(req.Text)
 	msgs := buildLLMMessages(req.Text)
-	assistantText, err := callOpenRouter(msgs)
+	assistantText, err := callOpenRouter(msgs, openRouterResponseFormat)
 	if err != nil {
 		errorLog.Printf("OpenRouter request failed: %v", err)
 		http.Error(w, "Assistant unavailable", http.StatusBadGateway)
@@ -539,6 +655,7 @@ func httpUserMessage(w http.ResponseWriter, r *http.Request) {
 		UserText:  req.Text,
 		Outline:   outline,
 		SQL:       sql,
+		Vega:      "",
 		Context:   msgs,
 	})
 	//todo: log on failure
@@ -588,7 +705,7 @@ func httpFixQuery(w http.ResponseWriter, r *http.Request) {
 		strings.TrimSpace(req.Text),
 	)
 	msgs := buildLLMMessages(fixPrompt)
-	assistantText, err := callOpenRouter(msgs)
+	assistantText, err := callOpenRouter(msgs, openRouterResponseFormat)
 	if err != nil {
 		errorLog.Printf("OpenRouter fix request failed: %v", err)
 		http.Error(w, "Assistant unavailable", http.StatusBadGateway)
@@ -612,6 +729,7 @@ func httpFixQuery(w http.ResponseWriter, r *http.Request) {
 		UserText:  fixPrompt,
 		Outline:   outline,
 		SQL:       sql,
+		Vega:      "",
 		Context:   msgs,
 	})
 	w.Header().Set("Content-Type", "application/json")
@@ -655,6 +773,135 @@ func httpExecute(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+func httpChartMessage(w http.ResponseWriter, r *http.Request) {
+	err, code, msg := httpCheckAuth(w, r)
+	if err != nil {
+		http.Error(w, msg, code)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Text string `json:"text"`
+		SQL  string `json:"sql"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	req.Text = strings.TrimSpace(req.Text)
+	req.SQL = strings.TrimSpace(req.SQL)
+	if req.Text == "" || req.SQL == "" {
+		http.Error(w, "text and sql are required", http.StatusBadRequest)
+		return
+	}
+	msgs := buildChartLLMMessages(req.Text, req.SQL)
+	assistantText, err := callOpenRouter(msgs, fmt.Sprintf(openRouterChartResponseFormat, vegaSpec))
+	if err != nil {
+		errorLog.Printf("callOpenRouter: %v", err)
+		http.Error(w, "Assistant unavailable", http.StatusBadGateway)
+		return
+	}
+	var parsed struct {
+		Outline   string          `json:"outline"`
+		ChartType string          `json:"charttype"`
+		Vega      json.RawMessage `json:"vega"`
+	}
+	if err := json.Unmarshal([]byte(assistantText), &parsed); err != nil {
+		errorLog.Printf("Unmarshal assistantText: %v", err)
+		http.Error(w, "Assistant returned invalid JSON", http.StatusBadGateway)
+		return
+	}
+	fmt.Println(parsed.Outline)
+	fmt.Println(parsed.ChartType)
+	fmt.Println(string(parsed.Vega))
+
+	var partialSpec map[string]interface{}
+	if err := json.Unmarshal(parsed.Vega, &partialSpec); err != nil {
+		errorLog.Printf("Unmarshal parsed.Vega: %v", err)
+		http.Error(w, "Assistant returned invalid Vega JSON", http.StatusBadGateway)
+		return
+	}
+	partialSpec["$schema"] = "https://vega.github.io/schema/vega-lite/v5.json"
+	partialSpec["data"] = map[string]interface{}{
+		"name": "sqldata",
+	}
+	if mark, ok := partialSpec["mark"]; ok {
+		if markStr, ok := mark.(string); ok {
+			partialSpec["mark"] = map[string]interface{}{
+				"type":    markStr,
+				"tooltip": true,
+			}
+		}
+	}
+	if title, ok := partialSpec["title"]; ok {
+		if titleStr, ok := title.(string); ok {
+			partialSpec["title"] = map[string]interface{}{
+				"text":     titleStr,
+				"fontSize": 20,
+			}
+		}
+	}
+	if enc, ok := partialSpec["encoding"].(map[string]interface{}); ok {
+		if _, ok := enc["color"]; !ok {
+			enc["color"] = map[string]interface{}{
+				"value": "black",
+			}
+		}
+	}
+	if enc, ok := partialSpec["encoding"].(map[string]interface{}); ok {
+		if x, ok := enc["x"].(map[string]interface{}); ok {
+			axis, ok := x["axis"].(map[string]interface{})
+			if !ok {
+				axis = make(map[string]interface{})
+				x["axis"] = axis
+			}
+			axis["gridColor"] = "#e0e0e0"
+			axis["gridOpacity"] = 0.3
+			axis["tickCount"] = 7
+		}
+		if y, ok := enc["y"].(map[string]interface{}); ok {
+			axis, ok := y["axis"].(map[string]interface{})
+			if !ok {
+				axis = make(map[string]interface{})
+				y["axis"] = axis
+			}
+			axis["gridColor"] = "#e0e0e0"
+			axis["gridOpacity"] = 0.3
+			axis["tickCount"] = 7
+		}
+	}
+	if _, ok := partialSpec["width"]; !ok {
+		partialSpec["width"] = 600
+	}
+	if _, ok := partialSpec["height"]; !ok {
+		partialSpec["height"] = 400
+	}
+	specJSON, err := json.Marshal(partialSpec)
+	if err != nil {
+		errorLog.Printf("Marshal full Vega spec: %v", err)
+		http.Error(w, "Failed to generate Vega spec", http.StatusInternalServerError)
+		return
+	}
+
+	go logLLM(LLMLogEntry{
+		ID:        generateUniqueID(),
+		Timestamp: time.Now(),
+		UserText:  req.Text,
+		Outline:   strings.TrimSpace(parsed.Outline),
+		SQL:       req.SQL,
+		Vega:      string(parsed.Vega),
+		Context:   msgs,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"outline": strings.TrimSpace(parsed.Outline),
+		"spec":    json.RawMessage(specJSON),
+	})
+}
+
 func handleSlackSlash(w http.ResponseWriter, r *http.Request) {
 	if !verifySlackSignature(r) {
 		http.Error(w, "Invalid signature", http.StatusUnauthorized)
@@ -679,7 +926,7 @@ func handleSlackSlash(w http.ResponseWriter, r *http.Request) {
 	//todo: define func
 	go func(cmd slack.SlashCommand, userText string) {
 		msgs := buildLLMMessages(text)
-		assistantText, err := callOpenRouter(msgs)
+		assistantText, err := callOpenRouter(msgs, openRouterResponseFormat)
 		if err != nil {
 			errorLog.Printf("Slack, OpenRouter request failed: %v", err)
 			json.NewEncoder(w).Encode(map[string]string{
@@ -708,6 +955,7 @@ func handleSlackSlash(w http.ResponseWriter, r *http.Request) {
 			UserText:  text,
 			Outline:   outline,
 			SQL:       sql,
+			Vega:      "",
 			Context:   msgs,
 		})
 		postToResponseURL(cmd.ResponseURL, "```\n"+sql+"\n```")
