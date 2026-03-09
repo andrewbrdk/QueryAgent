@@ -2,23 +2,27 @@ import vegaEmbed, { VisualizationSpec } from 'vega-embed';
 
 class XMain extends HTMLElement {
 	#login: XLogin;
-	#queryagent: XQueryagent;
+	#dataagents: XDataAgents;
+	#queryagent: XQueryAgent;
 	#chartagent: XChartAgent;
 
 	constructor() {
 		super();
 		this.innerHTML = `
 			<x-login></x-login>
+			<x-dataagents></x-dataagents>
 			<x-queryagent></x-queryagent>
 			<x-chartagent></x-chartagent>
 		`;
 		this.#login = this.querySelector('x-login') as XLogin;
-		this.#queryagent = this.querySelector('x-queryagent') as XQueryagent;
+		this.#dataagents = this.querySelector('x-dataagents') as XDataAgents;
+		this.#queryagent = this.querySelector('x-queryagent') as XQueryAgent;
 		this.#chartagent = this.querySelector('x-chartagent') as XChartAgent;
 		this.#login.hidden = true;
+		this.#dataagents.hidden = true;
 		this.#queryagent.hidden = true;
 		this.#chartagent.hidden = true;
-		this.addEventListener('loginsuccess', (e) => {
+		this.addEventListener('loginsuccess', () => {
 			this.renderPage();
 		});
 		this.renderPage();
@@ -27,23 +31,32 @@ class XMain extends HTMLElement {
 	async renderPage() {
 		let res = await fetch('/checkauth');
 		const statusCode = res.status;
-		if (statusCode == 401) { // unauthorized
+		if (statusCode == 401) {
 			this.#login.hidden = false;
+			this.#dataagents.hidden = true;
 			this.#queryagent.hidden = true;
 			this.#chartagent.hidden = true;
 			return;
 		}
-    	const showChart = (window.location.pathname === '/chart');
-    	this.#login.hidden = true;
-    	if (showChart) {
+		const path = window.location.pathname;
+		this.#login.hidden = true;
+		if (path === '/chart') {
+			this.#dataagents.hidden = true;
 			this.#queryagent.hidden = true;
-    		this.#chartagent.hidden = false;
-        	this.#chartagent.render();
-    	} else {
+			this.#chartagent.hidden = false;
+			this.#chartagent.render();
+		} else if (path === '/query') {
+			this.#dataagents.hidden = true;
 			this.#queryagent.hidden = false;
-    		this.#chartagent.hidden = true;
-        	this.#queryagent.render();
-    	}
+			this.#chartagent.hidden = true;
+			this.#queryagent.render();
+		} else {
+			history.pushState(null, '', '/');
+			this.#dataagents.hidden = false;
+			this.#queryagent.hidden = true;
+			this.#chartagent.hidden = true;
+			this.#dataagents.render();
+		}
 	}
 }
 
@@ -51,7 +64,7 @@ class XLogin extends HTMLElement {
 	constructor() {
 		super();
 		this.innerHTML = `
-			<h1>Query Agent</h1>
+			<h1>Data Agents</h1>
 			<form>
 				<label for="password">Password:</label>
 				<input type="password" id="password" name="password" required>
@@ -82,9 +95,9 @@ class XLogin extends HTMLElement {
 			(this.querySelector('#invalidpassword') as HTMLElement).style.display = "none";
 			this.dispatchEvent(new CustomEvent('loginsuccess', { bubbles: true }));
 		} else {
-            let e = this.querySelector('#invalidpassword') as HTMLElement;
+			let e = this.querySelector('#invalidpassword') as HTMLElement;
 			e.style.display = "inline";
-			setTimeout(() => {e.style.display = "none";}, 3000);
+			setTimeout(() => { e.style.display = "none"; }, 3000);
 		}
 	}
 }
@@ -101,7 +114,220 @@ interface LLMPayload {
 	outline?: string;
 }
 
-class XQueryagent extends HTMLElement {
+interface ChartPayload {
+	outline?: string;
+	spec?: Record<string, unknown>;
+}
+
+interface DashPayload {
+	sql: string;
+	sql_result: SQLResult;
+	chart_outline?: string;
+	chart_spec?: Record<string, unknown>;
+}
+
+class XDataAgents extends HTMLElement {
+	#input: HTMLTextAreaElement;
+	#send: HTMLButtonElement;
+	#status: HTMLElement;
+	#statusmsg: HTMLElement;
+	#output: HTMLElement;
+	#tabChart: HTMLButtonElement;
+	#tabData: HTMLButtonElement;
+	#tabSQL: HTMLButtonElement;
+	#tabSpec: HTMLButtonElement;
+	#panelChart: HTMLElement;
+	#panelData: HTMLElement;
+	#panelSQL: HTMLTextAreaElement;
+	#panelSpec: HTMLTextAreaElement;
+
+	constructor() {
+		super();
+		this.innerHTML = `
+			<h1>Data Agents</h1>
+			<section id="dash-prompt">
+				<div class="label">Question:</div>
+				<textarea id="dash-input" class="mainarea" placeholder="Ask a question about your data..."></textarea>
+				<div class="btns">
+					<button id="dash-send" type="button">Send</button>
+				</div>
+			</section>
+			<section id="dash-status" hidden>
+				<div class="label"></div>
+				<div id="dash-statusmsg" class="mainarea"></div>
+				<div class="btns"></div>
+			</section>
+			<section id="dash-output" hidden>
+				<div class="label">Result:</div>
+				<div id="dash-panel-chart" class="mainarea"></div>
+				<div id="dash-panel-data" class="mainarea" hidden></div>
+				<textarea id="dash-panel-sql" class="mainarea" hidden></textarea>
+				<textarea id="dash-panel-spec" class="mainarea" hidden></textarea>
+				<div class="btns">
+					<button id="dash-tab-chart" type="button">Result</button>
+					<button id="dash-tab-data" type="button">Data</button>
+					<button id="dash-tab-sql" type="button">SQL</button>
+					<button id="dash-tab-spec" type="button">Vega</button>
+				</div>
+			</section>
+		`;
+		this.#input      = this.querySelector('#dash-input') as HTMLTextAreaElement;
+		this.#send       = this.querySelector('#dash-send') as HTMLButtonElement;
+		this.#status     = this.querySelector('#dash-status') as HTMLElement;
+		this.#statusmsg  = this.querySelector('#dash-statusmsg') as HTMLElement;
+		this.#output     = this.querySelector('#dash-output') as HTMLElement;
+		this.#tabChart   = this.querySelector('#dash-tab-chart') as HTMLButtonElement;
+		this.#tabData    = this.querySelector('#dash-tab-data') as HTMLButtonElement;
+		this.#tabSQL     = this.querySelector('#dash-tab-sql') as HTMLButtonElement;
+		this.#tabSpec    = this.querySelector('#dash-tab-spec') as HTMLButtonElement;
+		this.#panelChart = this.querySelector('#dash-panel-chart') as HTMLElement;
+		this.#panelData  = this.querySelector('#dash-panel-data') as HTMLElement;
+		this.#panelSQL   = this.querySelector('#dash-panel-sql') as HTMLTextAreaElement;
+		this.#panelSpec  = this.querySelector('#dash-panel-spec') as HTMLTextAreaElement;
+		this.bindEvents();
+	}
+
+	async render() {
+		//
+	}
+
+	bindEvents() {
+		this.#send.onclick = () => this.run();
+		this.#input.onkeydown = (e) => {
+			if (e.key === 'Enter' && !e.shiftKey) {
+				e.preventDefault();
+				this.run();
+			}
+		};
+		this.#tabChart.onclick = () => this.switchTab('chart');
+		this.#tabData.onclick  = () => this.switchTab('data');
+		this.#tabSQL.onclick   = () => this.switchTab('sql');
+		this.#tabSpec.onclick  = () => this.switchTab('spec');
+	}
+
+	switchTab(tab: 'chart' | 'data' | 'sql' | 'spec') {
+		this.#panelChart.hidden = tab !== 'chart';
+		this.#panelData.hidden  = tab !== 'data';
+		this.#panelSQL.hidden   = tab !== 'sql';
+		this.#panelSpec.hidden  = tab !== 'spec';
+	}
+
+	showStatus(html: string) {
+		this.#status.hidden = false;
+		this.#statusmsg.innerHTML = html;
+	}
+
+	hideStatus() {
+		this.#status.hidden = true;
+	}
+
+	async run() {
+		const text = this.#input.value.trim();
+		if (!text) {
+			this.showStatus(`<div class="errmsg">Please enter a question.</div>`);
+			return;
+		}
+		this.#send.disabled = true;
+		this.#output.hidden = true;
+		this.#panelChart.innerHTML = '';
+		this.#panelData.innerHTML = '';
+		this.#panelSQL.value = '';
+		this.#panelSpec.value = '';
+		this.showStatus(`<em>Thinking...</em>`);
+		try {
+			const res = await fetch('/dash', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ text }),
+			});
+			if (!res.ok) {
+				const txt = await res.text();
+				this.showStatus(`<div class="errmsg">${escapeHTML(txt || 'Request failed.')}</div>`);
+				return;
+			}
+			const payload = await res.json() as DashPayload;
+			const sql = payload.sql ?? '';
+			const sqlResult = payload.sql_result;
+
+			this.#panelSQL.value = sql;
+			this.renderTable(sqlResult, this.#panelData);
+
+			if (payload.chart_spec) {
+				this.#panelSpec.value = JSON.stringify(payload.chart_spec, null, 2);
+				const rows = this.buildRows(sqlResult);
+				const specWithData = {
+					...payload.chart_spec,
+					data: { values: rows },
+				} as VisualizationSpec;
+				this.#panelChart.innerHTML = '';
+				await vegaEmbed(this.#panelChart, specWithData, { actions: false });
+				this.switchTab('chart');
+			} else {
+				this.switchTab('data');
+			}
+
+			this.#output.hidden = false;
+			this.hideStatus();
+		} catch (e) {
+			this.showStatus(`<div class="errmsg">Something went wrong.</div>`);
+		} finally {
+			this.#send.disabled = false;
+		}
+	}
+
+	buildRows(res: SQLResult): Record<string, unknown>[] {
+		const cols = res.column_names ?? [];
+		return (res.rows ?? []).map(row =>
+			Object.fromEntries(cols.map((col, i) => [col, row[i]]))
+		);
+	}
+
+	renderTable(res: SQLResult, target: HTMLElement) {
+		const columnNames = Array.isArray(res.column_names) ? res.column_names : [];
+		const columnTypes = Array.isArray(res.column_types) ? res.column_types : [];
+		const rows = Array.isArray(res.rows) ? res.rows : [];
+		const truncated = res.truncated === true;
+		if (columnNames.length === 0 && rows.length === 0) {
+			target.innerHTML = `<div class="sql-empty">No rows returned.</div>`;
+			return;
+		}
+		const numericTypes = new Set(["int2", "int4", "int8", "float4", "float8", "numeric"]);
+		const ths = columnNames.map((name, i) => {
+			const type = columnTypes[i] ?? '';
+			const isNumeric = numericTypes.has(type) ? 'numeric' : '';
+			return `<th class="${isNumeric}">${escapeHTML(name)}</th>`;
+		});
+		const head = `<thead><tr>${ths.join('')}</tr></thead>`;
+		const trs = rows.map((row) => {
+			const tds = (row as unknown[]).map((v, i) => {
+				let s: string;
+				if (v == null) {
+					s = 'NULL';
+				} else if (typeof v === 'object') {
+					s = JSON.stringify(v);
+				} else {
+					s = String(v);
+				}
+				const type = columnTypes[i] ?? '';
+				const isNumeric = numericTypes.has(type) ? 'numeric' : '';
+				return `<td class="${isNumeric}">${escapeHTML(s)}</td>`;
+			});
+			return `<tr>${tds.join('')}</tr>`;
+		});
+		const body = `<tbody>${trs.join('')}</tbody>`;
+		const truncatedMsg = truncated
+			? `<div class="infomsg">Results are limited to ${rows.length} rows.</div>`
+			: '';
+		target.innerHTML = `
+			${truncatedMsg}
+			<table>
+				${head}
+				${body}
+			</table>`;
+	}
+}
+
+class XQueryAgent extends HTMLElement {
 	#messageinput: HTMLInputElement;
 	#sendmessage: HTMLButtonElement;
 	#isSendingMessage: boolean = false;
@@ -530,5 +756,6 @@ function escapeHTML(str: string): string {
 
 customElements.define('x-main', XMain);
 customElements.define('x-login', XLogin);
-customElements.define('x-queryagent', XQueryagent);
+customElements.define('x-dataagents', XDataAgents);
+customElements.define('x-queryagent', XQueryAgent);
 customElements.define('x-chartagent', XChartAgent);

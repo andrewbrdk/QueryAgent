@@ -11,9 +11,9 @@ RUN mkdir -p /app/logs
 COPY main.go go.mod /app/
 COPY --from=frontend /app/dist /app/dist
 WORKDIR /app
-RUN go get queryagent
+RUN go get dagents
 RUN go build
 RUN rm -r main.go go.mod ./dist
 
 EXPOSE 8080
-ENTRYPOINT ["/app/queryagent"]
+ENTRYPOINT ["/app/dagents"]

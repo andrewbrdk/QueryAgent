@@ -1,4 +1,4 @@
-module queryagent
+module dagents
 
 go 1.19
 

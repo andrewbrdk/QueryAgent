@@ -34,9 +34,9 @@ var infoLog *log.Logger
 var errorLog *log.Logger
 
 var CONF Config
-var QUERYAGENT Queryagent
+var DAGENTS DataAgents
 
-type Queryagent struct {
+type DataAgents struct {
 	execConnPool *pgxpool.Pool
 }
 
@@ -197,9 +197,9 @@ func main() {
 	errorLog = log.New(os.Stdout, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 	initConfig()
 	jwtSecretKey = generateRandomKey(32)
-	QUERYAGENT.initExecConnPool()
-	if QUERYAGENT.execConnPool != nil {
-		defer QUERYAGENT.execConnPool.Close()
+	DAGENTS.initExecConnPool()
+	if DAGENTS.execConnPool != nil {
+		defer DAGENTS.execConnPool.Close()
 	}
 	httpServer()
 }
@@ -207,30 +207,30 @@ func main() {
 func initConfig() {
 	CONF.port = ":8080"
 	CONF.password = ""
-	if port := os.Getenv("QUERYAGENT_PORT"); port != "" {
+	if port := os.Getenv("DAGENTS_PORT"); port != "" {
 		CONF.port = ":" + port
 	}
-	CONF.password = os.Getenv("QUERYAGENT_PASSWORD")
+	CONF.password = os.Getenv("DAGENTS_PASSWORD")
 	CONF.openRouterKey = strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
 	CONF.openRouterModel = strings.TrimSpace(os.Getenv("OPENROUTER_MODEL"))
 	if CONF.openRouterKey == "" || CONF.openRouterModel == "" {
 		log.Fatal("OPENROUTER_API_KEY and OPENROUTER_MODEL are required")
 	}
-	CONF.execDB = os.Getenv("QUERYAGENT_EXEC_DB")
+	CONF.execDB = os.Getenv("DAGENTS_EXEC_DB")
 	if CONF.execDB == "" {
-		errorLog.Printf("QUERYAGENT_EXEC_DB is not set. SQL execution is not available.")
+		errorLog.Printf("DAGENTS_EXEC_DB is not set. SQL execution is not available.")
 	}
-	CONF.logFile = strings.TrimSpace(os.Getenv("QUERYAGENT_LOG_FILE"))
+	CONF.logFile = strings.TrimSpace(os.Getenv("DAGENTS_LOG_FILE"))
 	if CONF.logFile == "" {
-		errorLog.Printf("QUERYAGENT_LOG_FILE is not set. Logging is disabled.")
+		errorLog.Printf("DAGENTS_LOG_FILE is not set. Logging is disabled.")
 	}
-	CONF.contextPath = os.Getenv("QUERYAGENT_CONTEXT_PATH")
+	CONF.contextPath = os.Getenv("DAGENTS_CONTEXT_PATH")
 	if CONF.contextPath == "" {
 		errorLog.Printf("No context directory configured.")
 	}
-	CONF.slackSigningSecret = os.Getenv("QUERYAGENT_SLACK_SIGNING_SECRET")
+	CONF.slackSigningSecret = os.Getenv("DAGENTS_SLACK_SIGNING_SECRET")
 	if CONF.slackSigningSecret == "" {
-		errorLog.Printf("QUERYAGENT_SLACK_SIGNING_SECRET is not set.")
+		errorLog.Printf("DAGENTS_SLACK_SIGNING_SECRET is not set.")
 	}
 }
 
@@ -244,7 +244,7 @@ func generateRandomKey(size int) []byte {
 	return key
 }
 
-func (Q *Queryagent) initExecConnPool() {
+func (D *DataAgents) initExecConnPool() {
 	if strings.TrimSpace(CONF.execDB) == "" {
 		infoLog.Printf("No execution database configured.")
 		return
@@ -258,7 +258,7 @@ func (Q *Queryagent) initExecConnPool() {
 	if err := pool.Ping(ctx); err != nil {
 		log.Fatalf("cannot ping execution db connection: %v", err)
 	}
-	Q.execConnPool = pool
+	D.execConnPool = pool
 }
 
 func buildLLMMessages(msg string) []LLMMessage {
@@ -414,12 +414,12 @@ type SQLResult struct {
 	Truncated   bool     `json:"truncated"`
 }
 
-func (Q *Queryagent) ExecuteSQL(query string) (SQLResult, error) {
+func (D *DataAgents) ExecuteSQL(query string) (SQLResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return SQLResult{}, errors.New("Empty query.")
 	}
-	if Q.execConnPool == nil {
+	if D.execConnPool == nil {
 		return SQLResult{}, errors.New("Execution DB is not set.")
 	}
 	//todo: set timeout from config
@@ -427,7 +427,7 @@ func (Q *Queryagent) ExecuteSQL(query string) (SQLResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	conn, err := Q.execConnPool.Acquire(ctx)
+	conn, err := D.execConnPool.Acquire(ctx)
 	if err != nil {
 		return SQLResult{}, err
 	}
@@ -527,6 +527,7 @@ func httpServer() {
 	http.HandleFunc("/fix", httpFixQuery)
 	http.HandleFunc("/execute", httpExecute)
 	http.HandleFunc("/chart/message", httpChartMessage)
+	http.HandleFunc("/dash", httpDash)
 	http.HandleFunc("/slack/slash", handleSlackSlash)
 	log.Fatal(http.ListenAndServe(CONF.port, nil))
 }
@@ -764,7 +765,7 @@ func httpExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	//todo: create cancel context
-	result, err := QUERYAGENT.ExecuteSQL(query)
+	result, err := DAGENTS.ExecuteSQL(query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -902,6 +903,183 @@ func httpChartMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func buildVegaSpec(vega json.RawMessage) (json.RawMessage, error) {
+	var partialSpec map[string]interface{}
+	if err := json.Unmarshal(vega, &partialSpec); err != nil {
+		return nil, fmt.Errorf("unmarshal vega: %w", err)
+	}
+	partialSpec["$schema"] = "https://vega.github.io/schema/vega-lite/v5.json"
+	partialSpec["data"] = map[string]interface{}{
+		"name": "sqldata",
+	}
+	if mark, ok := partialSpec["mark"]; ok {
+		if markStr, ok := mark.(string); ok {
+			partialSpec["mark"] = map[string]interface{}{
+				"type":    markStr,
+				"tooltip": true,
+			}
+		}
+	}
+	if title, ok := partialSpec["title"]; ok {
+		if titleStr, ok := title.(string); ok {
+			partialSpec["title"] = map[string]interface{}{
+				"text":     titleStr,
+				"fontSize": 20,
+			}
+		}
+	}
+	if enc, ok := partialSpec["encoding"].(map[string]interface{}); ok {
+		if _, ok := enc["color"]; !ok {
+			enc["color"] = map[string]interface{}{
+				"value": "black",
+			}
+		}
+		if x, ok := enc["x"].(map[string]interface{}); ok {
+			axis, ok := x["axis"].(map[string]interface{})
+			if !ok {
+				axis = make(map[string]interface{})
+				x["axis"] = axis
+			}
+			axis["gridColor"] = "#e0e0e0"
+			axis["gridOpacity"] = 0.3
+			axis["tickCount"] = 7
+		}
+		if y, ok := enc["y"].(map[string]interface{}); ok {
+			axis, ok := y["axis"].(map[string]interface{})
+			if !ok {
+				axis = make(map[string]interface{})
+				y["axis"] = axis
+			}
+			axis["gridColor"] = "#e0e0e0"
+			axis["gridOpacity"] = 0.3
+			axis["tickCount"] = 7
+		}
+	}
+	if _, ok := partialSpec["width"]; !ok {
+		partialSpec["width"] = 600
+	}
+	if _, ok := partialSpec["height"]; !ok {
+		partialSpec["height"] = 400
+	}
+	specJSON, err := json.Marshal(partialSpec)
+	if err != nil {
+		return nil, fmt.Errorf("marshal vega spec: %w", err)
+	}
+	return specJSON, nil
+}
+
+func httpDash(w http.ResponseWriter, r *http.Request) {
+	err, code, msg := httpCheckAuth(w, r)
+	if err != nil {
+		http.Error(w, msg, code)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	req.Text = strings.TrimSpace(req.Text)
+	if req.Text == "" {
+		http.Error(w, "text is required", http.StatusBadRequest)
+		return
+	}
+
+	msgs := buildLLMMessages(req.Text)
+	assistantText, err := callOpenRouter(msgs, openRouterResponseFormat)
+	if err != nil {
+		errorLog.Printf("httpDash: callOpenRouter SQL: %v", err)
+		http.Error(w, "Assistant unavailable", http.StatusBadGateway)
+		return
+	}
+	var llmParsed struct {
+		Outline string `json:"outline"`
+		SQL     string `json:"sql"`
+	}
+	if err := json.Unmarshal([]byte(assistantText), &llmParsed); err != nil {
+		errorLog.Printf("httpDash: unmarshal SQL response: %v", err)
+		http.Error(w, "Assistant returned invalid JSON", http.StatusBadGateway)
+		return
+	}
+	sql := formatSQL(llmParsed.SQL)
+
+	type execResult struct {
+		result SQLResult
+		err    error
+	}
+	type chartResult struct {
+		outline string
+		spec    json.RawMessage
+		err     error
+	}
+	execCh := make(chan execResult, 1)
+	chartCh := make(chan chartResult, 1)
+	go func() {
+		res, err := DAGENTS.ExecuteSQL(sql)
+		execCh <- execResult{res, err}
+	}()
+	go func() {
+		chartMsgs := buildChartLLMMessages(req.Text, sql)
+		text, err := callOpenRouter(chartMsgs, fmt.Sprintf(openRouterChartResponseFormat, vegaSpec))
+		if err != nil {
+			errorLog.Printf("httpDash: callOpenRouter chart: %v", err)
+			chartCh <- chartResult{err: err}
+			return
+		}
+		var parsed struct {
+			Outline string          `json:"outline"`
+			Vega    json.RawMessage `json:"vega"`
+		}
+		if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+			errorLog.Printf("httpDash: unmarshal chart response: %v", err)
+			chartCh <- chartResult{err: err}
+			return
+		}
+		specJSON, err := buildVegaSpec(parsed.Vega)
+		if err != nil {
+			errorLog.Printf("httpDash: buildVegaSpec: %v", err)
+			chartCh <- chartResult{err: err}
+			return
+		}
+		chartCh <- chartResult{outline: strings.TrimSpace(parsed.Outline), spec: specJSON}
+	}()
+	execRes := <-execCh
+	chartRes := <-chartCh
+
+	if execRes.err != nil {
+		http.Error(w, execRes.err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	go logLLM(LLMLogEntry{
+		ID:        generateUniqueID(),
+		Timestamp: time.Now(),
+		UserText:  req.Text,
+		Outline:   llmParsed.Outline,
+		SQL:       sql,
+		Vega:      string(chartRes.spec),
+		Context:   msgs,
+	})
+
+	resp := map[string]interface{}{
+		"sql":        sql,
+		"sql_result": execRes.result,
+	}
+	if chartRes.err == nil && chartRes.spec != nil {
+		resp["chart_outline"] = chartRes.outline
+		resp["chart_spec"] = json.RawMessage(chartRes.spec)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
 func handleSlackSlash(w http.ResponseWriter, r *http.Request) {
 	if !verifySlackSignature(r) {
 		http.Error(w, "Invalid signature", http.StatusUnauthorized)
@@ -917,7 +1095,7 @@ func handleSlackSlash(w http.ResponseWriter, r *http.Request) {
 	text := strings.TrimSpace(cmd.Text)
 	if text == "" {
 		json.NewEncoder(w).Encode(map[string]string{
-			"text": "Usage: `/queryagent select * from users`",
+			"text": "Usage: `/dagents select * from users`",
 		})
 		return
 	}
